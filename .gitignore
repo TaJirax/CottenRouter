@@ -1,6 +1,27 @@
+# Build output
 /bin/
+/dist/
 /.cache/
 /cottendns-router
 /cottenrouter
+cottenrouter-*-*
+
+# Local runtime config (the committed examples are the templates)
 cottenrouter.json
 *.log
+
+# Go test and profiling artifacts. Source files named *_test.go stay tracked;
+# these are the compiled binaries and reports the toolchain drops in-tree.
+*.test
+*.test.exe
+*.out
+coverage.txt
+*.prof
+/testdata/tmp/
+
+# Scratch and editor leftovers
+*.tmp
+*.bak
+*.orig
+*~
+.DS_Store
