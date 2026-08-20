@@ -186,6 +186,13 @@ func TestRouterUDPThroughputAgainstDirectBaseline(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx, frontend) }()
 
+	if raceEnabled {
+		// The detector instruments every memory access. The router touches far
+		// more state per query than the direct echo, so this ratio measures the
+		// detector's overhead rather than routing overhead. The same test runs
+		// unraced in CI, where the number means something.
+		t.Skip("throughput ratio is not meaningful under the race detector")
+	}
 	// Warm up both paths first. The first measurement pays connection setup,
 	// backend socket creation, and Go's own scheduler ramp; folding that into a
 	// trial is what made this gate look like a routing regression.
