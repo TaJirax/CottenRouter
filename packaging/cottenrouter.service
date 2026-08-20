@@ -1,0 +1,37 @@
+[Unit]
+Description=CottenRouter multi-backend DNS and TLS router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cottenrouter
+Group=cottenrouter
+ExecStart=/usr/local/bin/cottenrouter serve -config /etc/cottenrouter/config.json
+Restart=always
+RestartSec=3s
+LimitNOFILE=65536
+TasksMax=2048
+
+# Process-level fallbacks complement CottenRouter's bounded queues and limits.
+MemoryAccounting=yes
+MemoryHigh=512M
+MemoryMax=768M
+CPUAccounting=yes
+CPUQuota=200%
+OOMPolicy=stop
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

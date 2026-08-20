@@ -2,7 +2,9 @@
 
 CottenRouter is a small DNS front router for running CottenDNS, MasterDnsVPN,
 StormDNS, thefeed, and SlipGate-managed DNS transports behind one public UDP
-and TCP port 53. Each backend listens on a
+and TCP port 53. It can also share public DoT and HTTPS ports by inspecting TLS
+SNI and passing each encrypted stream unchanged to the selected CottenDNS or
+SlipGate backend. Each backend listens on a
 private loopback port. CottenRouter extracts the first query name, selects the
 longest matching configured suffix, forwards the datagram, and returns the
 reply to the original client.
@@ -10,7 +12,9 @@ reply to the original client.
 The router allocates its own DNS transaction IDs per backend. This prevents two
 clients that chose the same 16-bit ID from receiving one another's responses.
 Pending queries are bounded and expired, malformed queries are dropped, and
-remote backends are rejected unless explicitly enabled.
+remote backends are rejected unless explicitly enabled. Fixed worker queues,
+global/per-source token buckets, connection caps, byte-rate budgets, deadlines,
+and bounded source tracking protect CPU, RAM, and uplink capacity.
 
 SlipGate's native `/etc/slipgate/config.json` can be loaded directly. Its
 DNSTT/NoizDNS, Slipstream, VayDNS, and external DNS routes are imported along
@@ -66,7 +70,13 @@ key, so each backend must have at least one unique domain. CottenRouter adds no
 DNS labels or protocol bytes and therefore does not reduce tunnel MTU.
 
 CottenDNS's DoT, DoH, ACME, metrics, compression, ARQ, MTU discovery, record
-channels, and SOCKS/TCP forwarding remain inside CottenDNS. DoT/DoH keep their
-own ports and bypass CottenRouter; clear DNS-over-TCP/53 is routed by
-CottenRouter. Likewise, thefeed's feed, extra, chat, media, signing, and relay
-queries are payload-transparent—list every feed/chat suffix on its route.
+channels, and SOCKS/TCP forwarding remain inside CottenDNS. CottenRouter routes
+clear DNS-over-TCP on port 53 and can route DoT/DoH streams by SNI while
+preserving CottenDNS's TLS and HTTP handling end to end. The same passthrough
+supports SlipGate's TLS transports, including NaiveProxy and StunTLS. Likewise,
+thefeed's feed, extra, chat, media, signing, and relay queries are
+payload-transparent—list every feed/chat suffix on its route.
+
+See [`docs/security.md`](docs/security.md) for flood controls, the hardened
+systemd unit, and the idempotent helper that ensures at least 2 GiB of Linux
+swap before production deployment.

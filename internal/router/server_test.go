@@ -309,3 +309,48 @@ func TestServerRoutesPipelinedTCPQueriesByDomain(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServerEnforcesUDPSourceBurst(t *testing.T) {
+	backend, closeBackend := fakeBackend(t, 0xf1)
+	defer closeBackend()
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		QueryTimeoutMS: 500, Routes: []config.Route{{Name: "limited", Domains: []string{"limited.example"}, Backend: backend.LocalAddr().String()}},
+	}
+	cfg.Limits.PerIPQueriesPerSecond = 1
+	cfg.Limits.PerIPQueryBurst = 2
+	server, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, listener) }()
+	client, err := net.DialUDP("udp", nil, listener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for i := 0; i < 20; i++ {
+		_, _ = client.Write(makeQuery("x.limited.example", uint16(i)))
+	}
+	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	responses := 0
+	buffer := make([]byte, 4096)
+	for {
+		if _, err := client.Read(buffer); err != nil {
+			break
+		}
+		responses++
+	}
+	if responses != 2 {
+		t.Fatalf("received %d responses, want exactly burst of 2", responses)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,7 +1,6 @@
 package router
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
@@ -28,9 +27,6 @@ func newRouteTable(routes []config.Route) (routeTable, error) {
 				verifyKey: route.VerifyKey, verifyMTU: verifyMTU(route),
 			})
 		}
-	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("no route domains configured")
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return len(entries[i].domain) > len(entries[j].domain)

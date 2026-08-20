@@ -80,6 +80,10 @@ func check(args []string) error {
 	if cfg.ListenTCP != "" {
 		fmt.Printf(", TCP %s", cfg.ListenTCP)
 	}
+	if len(cfg.TLSListeners) > 0 {
+		fmt.Printf(", %d TLS/SNI listener(s)", len(cfg.TLSListeners))
+	}
+	fmt.Printf(", %d UDP workers, %d queued packets max", cfg.Limits.UDPWorkers, cfg.Limits.UDPQueue)
 	fmt.Println()
 	return nil
 }

@@ -31,13 +31,24 @@ suffixes are supported; the longest suffix wins.
   transaction-ID mapping, which is restored on replies.
 - Clear DNS-over-TCP/53 uses standard RFC 1035 framing and can pipeline queries
   for different backends on one client connection.
-- CottenDNS DoT/853 and DoH/443 are not port-53 traffic. They remain bound
-  directly by CottenDNS, including its ACME, shared-backend, and coexist modes.
+- CottenDNS DoT and DoH bind private loopback ports. Public `:853` and `:443`
+  TLS listeners route by SNI and pass encrypted bytes unchanged, preserving
+  CottenDNS certificates, ACME, HTTP paths, authentication, and coexist modes.
+- SlipGate NaiveProxy and StunTLS can use the same TLS passthrough. Give every
+  SNI-routed service its own hostname and private loopback port. StunTLS has no
+  domain field in SlipGate's native config, so its hostname is entered in the
+  CottenRouter TLS route explicitly.
 - Add every thefeed main, extra, and chat domain to the same route. CottenRouter
   does not interpret feed, messenger, media, signing, or relay payloads.
 - When `slipgate_configs` is used, stop and disable `slipgate-dnsrouter` only.
   Keep all `slipgate-{tag}`, SOCKS, SSH, NaiveProxy, and StunTLS services. HMAC
   verification probes are answered using imported public keys/certificates.
+
+The native SlipGate import covers all DNS transports and their verification
+material. TLS services stay explicit because SlipGate's default public `:443`
+must first be moved to a private listener; the future TUI adapter will perform
+that service rewrite transactionally. See `cottenrouter.example.json` for
+NaiveProxy and StunTLS SNI routes.
 
 ## Installer freshness
 

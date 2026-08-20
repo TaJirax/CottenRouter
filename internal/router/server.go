@@ -8,25 +8,35 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/TaJirax/CottenRouter/internal/config"
 	"github.com/TaJirax/CottenRouter/internal/dnswire"
+	"github.com/TaJirax/CottenRouter/internal/guard"
 )
 
 type Server struct {
-	cfg         config.Config
-	routes      routeTable
-	logger      *slog.Logger
-	listener    *net.UDPConn
-	tcpListener net.Listener
-	done        chan struct{}
+	cfg          config.Config
+	routes       routeTable
+	logger       *slog.Logger
+	listener     *net.UDPConn
+	tcpListener  net.Listener
+	tlsListeners []net.Listener
+	done         chan struct{}
+	guard        *guard.Limiter
 
-	mu        sync.Mutex
-	backends  map[string]*backendConn
-	wg        sync.WaitGroup
-	closeOnce sync.Once
+	mu              sync.Mutex
+	backends        map[string]*backendConn
+	wg              sync.WaitGroup
+	closeOnce       sync.Once
+	maintenanceOnce sync.Once
+	packetPool      sync.Pool
+	tcpCapacity     chan struct{}
+	listenersMu     sync.Mutex
+	connectionsMu   sync.Mutex
+	connections     map[net.Conn]struct{}
 }
 
 type backendConn struct {
@@ -54,10 +64,13 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	server := &Server{
 		cfg: cfg, routes: table, logger: logger,
-		done: make(chan struct{}), backends: make(map[string]*backendConn),
-	}, nil
+		done: make(chan struct{}), guard: guard.New(cfg.Limits), backends: make(map[string]*backendConn),
+		tcpCapacity: make(chan struct{}, cfg.MaxTCPConnections), connections: make(map[net.Conn]struct{}),
+	}
+	server.packetPool.New = func() any { return make([]byte, cfg.MaxPacketSize) }
+	return server, nil
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -69,28 +82,55 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.ListenUDP, err)
 	}
-	var tcpErrors chan error
+	s.listenersMu.Lock()
+	s.listener = listener
+	s.listenersMu.Unlock()
+	streamErrors := make(chan error, 1+len(s.cfg.TLSListeners))
+	streamCount := 0
+	openedTLS := make([]net.Listener, 0, len(s.cfg.TLSListeners))
 	if s.cfg.ListenTCP != "" {
 		tcpListener, err := net.Listen("tcp", s.cfg.ListenTCP)
 		if err != nil {
 			_ = listener.Close()
 			return fmt.Errorf("listen on TCP %s: %w", s.cfg.ListenTCP, err)
 		}
+		s.listenersMu.Lock()
 		s.tcpListener = tcpListener
-		tcpErrors = make(chan error, 1)
+		s.listenersMu.Unlock()
+		streamCount++
 		go func() {
 			err := s.ServeTCP(ctx, tcpListener)
 			if err != nil {
 				s.Close()
 			}
-			tcpErrors <- err
+			streamErrors <- err
+		}()
+	}
+	for _, tlsConfig := range s.cfg.TLSListeners {
+		tlsListener, err := net.Listen("tcp", tlsConfig.Listen)
+		if err != nil {
+			_ = listener.Close()
+			for _, opened := range openedTLS {
+				_ = opened.Close()
+			}
+			s.Close()
+			return fmt.Errorf("listen on TLS %s (%s): %w", tlsConfig.Name, tlsConfig.Listen, err)
+		}
+		openedTLS = append(openedTLS, tlsListener)
+		streamCount++
+		go func() {
+			err := s.ServeTLS(ctx, tlsListener, tlsConfig)
+			if err != nil {
+				s.Close()
+			}
+			streamErrors <- err
 		}()
 	}
 	udpErr := s.Serve(ctx, listener)
 	s.Close()
-	if tcpErrors != nil {
-		if tcpErr := <-tcpErrors; udpErr == nil && tcpErr != nil {
-			return tcpErr
+	for i := 0; i < streamCount; i++ {
+		if streamErr := <-streamErrors; udpErr == nil && streamErr != nil {
+			udpErr = streamErr
 		}
 	}
 	return udpErr
@@ -99,8 +139,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // Serve runs on an already-open UDP socket. It is exported to support socket
 // activation and deterministic local tests.
 func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
+	s.listenersMu.Lock()
 	s.listener = listener
+	s.listenersMu.Unlock()
 	s.logger.Info("CottenRouter listening", "network", "udp", "address", listener.LocalAddr())
+	s.startMaintenance()
 
 	stop := make(chan struct{})
 	go func() {
@@ -112,26 +155,56 @@ func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
 	}()
 	defer close(stop)
 
+	type datagram struct {
+		packet []byte
+		client *net.UDPAddr
+	}
+	queue := make(chan datagram, s.cfg.Limits.UDPQueue)
+	for i := 0; i < s.cfg.Limits.UDPWorkers; i++ {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			for item := range queue {
+				s.handleQuery(item.packet, item.client)
+				s.packetPool.Put(item.packet[:cap(item.packet)])
+			}
+		}()
+	}
+	finish := func() {
+		close(queue)
+		s.Close()
+		s.wg.Wait()
+	}
+
 	for {
-		packet := make([]byte, s.cfg.MaxPacketSize)
+		packet := s.packetPool.Get().([]byte)
 		n, clientAddr, err := listener.ReadFromUDP(packet)
 		if err != nil {
+			s.packetPool.Put(packet)
+			finish()
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				s.wg.Wait()
 				return nil
 			}
 			return fmt.Errorf("read client packet: %w", err)
 		}
 		packet = packet[:n]
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.handleQuery(packet, clientAddr)
-		}()
+		if !s.guard.AllowQuery(ipFromUDP(clientAddr)) {
+			s.packetPool.Put(packet[:cap(packet)])
+			continue
+		}
+		select {
+		case queue <- datagram{packet: packet, client: clientAddr}:
+		default:
+			// Drop on overload. The queue and worker count are fixed, so an
+			// attacker cannot turn packets into unbounded goroutines or memory.
+			s.packetPool.Put(packet[:cap(packet)])
+		}
 	}
 }
 
 func (s *Server) Addr() net.Addr {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
 	if s.listener == nil {
 		return nil
 	}
@@ -142,6 +215,7 @@ func (s *Server) Close() error {
 	var closeErr error
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.listenersMu.Lock()
 		if s.listener != nil {
 			closeErr = s.listener.Close()
 		}
@@ -150,6 +224,17 @@ func (s *Server) Close() error {
 				closeErr = err
 			}
 		}
+		for _, listener := range s.tlsListeners {
+			if err := listener.Close(); closeErr == nil {
+				closeErr = err
+			}
+		}
+		s.listenersMu.Unlock()
+		s.connectionsMu.Lock()
+		for conn := range s.connections {
+			_ = conn.Close()
+		}
+		s.connectionsMu.Unlock()
 		s.mu.Lock()
 		for _, backend := range s.backends {
 			_ = backend.conn.Close()
@@ -163,18 +248,20 @@ func (s *Server) Close() error {
 // is routed independently, so one persistent client connection can use more
 // than one configured suffix without being pinned to the first backend.
 func (s *Server) ServeTCP(ctx context.Context, listener net.Listener) error {
+	s.listenersMu.Lock()
 	s.tcpListener = listener
+	s.listenersMu.Unlock()
 	s.logger.Info("CottenRouter listening", "network", "tcp", "address", listener.Addr())
+	s.startMaintenance()
 	stop := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = listener.Close()
+			s.Close()
 		case <-stop:
 		}
 	}()
 	defer close(stop)
-	capacity := make(chan struct{}, s.cfg.MaxTCPConnections)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -188,18 +275,17 @@ func (s *Server) ServeTCP(ctx context.Context, listener net.Listener) error {
 			}
 			return fmt.Errorf("accept TCP DNS client: %w", err)
 		}
-		select {
-		case capacity <- struct{}{}:
-			s.wg.Add(1)
-			go func() {
-				defer s.wg.Done()
-				defer func() { <-capacity }()
-				s.handleTCPConnection(conn)
-			}()
-		default:
-			s.logger.Warn("TCP connection limit reached", "client", conn.RemoteAddr())
+		clientIP, ok := s.acquireTCPClient(conn)
+		if !ok {
 			_ = conn.Close()
+			continue
 		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			defer s.releaseTCPClient(conn, clientIP)
+			s.handleTCPConnection(conn)
+		}()
 	}
 }
 
@@ -207,19 +293,26 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 	defer client.Close()
 	var writeMu sync.Mutex
 	var queries sync.WaitGroup
+	inflight := make(chan struct{}, s.cfg.Limits.MaxTCPInflightPerConnection)
 	defer queries.Wait()
-	for {
+	clientIP := ipFromAddr(client.RemoteAddr())
+	for queryCount := 0; queryCount < s.cfg.Limits.MaxTCPQueriesPerConnection; queryCount++ {
 		_ = client.SetReadDeadline(time.Now().Add(s.cfg.QueryTimeout()))
-		packet, err := readTCPMessage(client, s.cfg.MaxPacketSize)
+		packet, err := readTCPMessage(client, s.cfg.MaxTCPMessageSize)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				s.logger.Debug("TCP client read stopped", "client", client.RemoteAddr(), "error", err)
 			}
 			return
 		}
+		if !s.guard.AllowQuery(clientIP) {
+			return
+		}
+		inflight <- struct{}{}
 		queries.Add(1)
 		go func() {
 			defer queries.Done()
+			defer func() { <-inflight }()
 			s.handleTCPQuery(client, &writeMu, packet)
 		}()
 	}
@@ -233,18 +326,18 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 	route, ok := s.routes.match(qname)
 	if !ok {
 		if s.cfg.UnmatchedAction == "refused" {
-			writeTCPMessage(client, writeMu, dnswire.RefusedResponse(packet), s.cfg.QueryTimeout())
+			s.writeTCPMessage(client, writeMu, dnswire.RefusedResponse(packet), s.cfg.QueryTimeout())
 		}
 		return
 	}
 	if route.tcpBackend == "disabled" {
-		writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
+		s.writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
 		return
 	}
 	backend, err := net.DialTimeout("tcp", route.tcpBackend, s.cfg.QueryTimeout())
 	if err != nil {
 		s.logger.Debug("TCP backend unavailable", "route", route.name, "backend", route.tcpBackend, "error", err)
-		writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
+		s.writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
 		return
 	}
 	defer backend.Close()
@@ -252,11 +345,11 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 	if err := writeFramedDNS(backend, packet); err != nil {
 		return
 	}
-	response, err := readTCPMessage(backend, s.cfg.MaxPacketSize)
+	response, err := readTCPMessage(backend, s.cfg.MaxTCPMessageSize)
 	if err != nil {
 		return
 	}
-	writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout())
+	s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout())
 }
 
 func readTCPMessage(reader io.Reader, maxSize int) ([]byte, error) {
@@ -273,8 +366,11 @@ func readTCPMessage(reader io.Reader, maxSize int) ([]byte, error) {
 	return packet, err
 }
 
-func writeTCPMessage(conn net.Conn, mu *sync.Mutex, packet []byte, timeout time.Duration) {
+func (s *Server) writeTCPMessage(conn net.Conn, mu *sync.Mutex, packet []byte, timeout time.Duration) {
 	if len(packet) == 0 || len(packet) > 65535 {
+		return
+	}
+	if !s.guard.AllowResponse(len(packet) + 2) {
 		return
 	}
 	mu.Lock()
@@ -316,13 +412,13 @@ func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
 	if !ok {
 		if s.cfg.UnmatchedAction == "refused" {
 			if response := dnswire.RefusedResponse(packet); response != nil {
-				_, _ = s.listener.WriteToUDP(response, clientAddr)
+				s.writeUDPResponse(response, clientAddr)
 			}
 		}
 		return
 	}
 	if response, verified := s.verificationResponse(packet, route); verified {
-		_, _ = s.listener.WriteToUDP(response, clientAddr)
+		s.writeUDPResponse(response, clientAddr)
 		return
 	}
 	backend, err := s.getBackend(route.backend)
@@ -440,10 +536,90 @@ func (s *Server) readBackend(backend *backendConn) {
 			continue
 		}
 		binary.BigEndian.PutUint16(buffer[:2], query.clientID)
+		if !s.guard.AllowResponse(n) {
+			continue
+		}
 		if _, err := s.listener.WriteToUDP(buffer[:n], query.clientAddr); err != nil && !errors.Is(err, net.ErrClosed) {
 			s.logger.Debug("client response write failed", "client", query.clientAddr, "error", err)
 		}
 	}
+}
+
+func (s *Server) writeUDPResponse(packet []byte, client *net.UDPAddr) {
+	if len(packet) == 0 || !s.guard.AllowResponse(len(packet)) {
+		return
+	}
+	_, _ = s.listener.WriteToUDP(packet, client)
+}
+
+func (s *Server) startMaintenance() {
+	s.maintenanceOnce.Do(func() {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					s.guard.Prune(10 * time.Minute)
+				case <-s.done:
+					return
+				}
+			}
+		}()
+	})
+}
+
+func ipFromUDP(address *net.UDPAddr) netip.Addr {
+	if address == nil {
+		return netip.Addr{}
+	}
+	value, _ := netip.AddrFromSlice(address.IP)
+	return value.Unmap()
+}
+
+func ipFromAddr(address net.Addr) netip.Addr {
+	switch value := address.(type) {
+	case *net.TCPAddr:
+		ip, _ := netip.AddrFromSlice(value.IP)
+		return ip.Unmap()
+	case *net.UDPAddr:
+		return ipFromUDP(value)
+	default:
+		host, _, err := net.SplitHostPort(address.String())
+		if err != nil {
+			return netip.Addr{}
+		}
+		ip, _ := netip.ParseAddr(host)
+		return ip.Unmap()
+	}
+}
+
+func (s *Server) acquireTCPClient(conn net.Conn) (netip.Addr, bool) {
+	clientIP := ipFromAddr(conn.RemoteAddr())
+	if !s.guard.AcquireTCP(clientIP) {
+		return clientIP, false
+	}
+	select {
+	case s.tcpCapacity <- struct{}{}:
+		s.connectionsMu.Lock()
+		s.connections[conn] = struct{}{}
+		s.connectionsMu.Unlock()
+		return clientIP, true
+	default:
+		s.guard.ReleaseTCP(clientIP)
+		return clientIP, false
+	}
+}
+
+func (s *Server) releaseTCPClient(conn net.Conn, clientIP netip.Addr) {
+	_ = conn.Close()
+	s.connectionsMu.Lock()
+	delete(s.connections, conn)
+	s.connectionsMu.Unlock()
+	<-s.tcpCapacity
+	s.guard.ReleaseTCP(clientIP)
 }
 
 func (s *Server) expirePending(backend *backendConn) {

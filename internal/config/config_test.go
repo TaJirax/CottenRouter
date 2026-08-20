@@ -33,6 +33,41 @@ func TestValidateRejectsDuplicateDomain(t *testing.T) {
 	}
 }
 
+func TestValidateNormalizesTLSRoutes(t *testing.T) {
+	cfg := Config{TLSListeners: []TLSListener{{
+		Name: "https", Listen: "127.0.0.1:443",
+		Routes: []TLSRoute{{Name: "doh", ServerNames: []string{"*.DoH.Example."}, Backend: "127.0.0.1:8443"}},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.TLSListeners[0].Routes[0].ServerNames[0]; got != "doh.example" {
+		t.Fatalf("normalized SNI = %q", got)
+	}
+}
+
+func TestValidateRejectsRemoteTLSBackend(t *testing.T) {
+	cfg := Config{TLSListeners: []TLSListener{{
+		Name: "dot", Listen: "127.0.0.1:853", DefaultBackend: "192.0.2.1:8853",
+	}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected remote TLS backend error")
+	}
+}
+
+func TestValidateRejectsDNSAndTLSOnSameTCPAddress(t *testing.T) {
+	cfg := Config{
+		ListenTCP: "127.0.0.1:53",
+		Routes:    []Route{{Name: "dns", Domains: []string{"dns.example"}, Backend: "127.0.0.1:5301"}},
+		TLSListeners: []TLSListener{{
+			Name: "tls", Listen: "127.0.0.1:53", DefaultBackend: "127.0.0.1:853",
+		}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected duplicate TCP listener error")
+	}
+}
+
 func TestLoadImportsEnabledSlipGateDNSTunnels(t *testing.T) {
 	dir := t.TempDir()
 	slipGate := `{
