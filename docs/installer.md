@@ -27,10 +27,14 @@ and restarts the services. Configuration snapshots are restored on failure.
 
 - CottenRouter exclusively owns public UDP/TCP 53. The DNS suffix selects the
   private backend without changing its payload.
-- When 443 is free, CottenRouter can route DoH by TLS SNI. When a panel owns
-  443, CottenDNS uses behind-panel h2c and the panel remains in control. Add a
-  reverse proxy for the chosen DoH hostname to the private port reported by the
-  installer.
+- When 443 is free, CottenRouter routes DoH there by TLS SNI. When a panel owns
+  443, the panel remains untouched and CottenRouter assigns a distinct free
+  public TLS port plus a separate loopback backend port. The installer reports
+  the alternate public port that clients must use. CottenDNS router-front DoH
+  requires a configured certificate/key: its current ACME implementation only
+  activates when its own local listener is `:443`, and ACME cannot issue on an
+  alternate public port. The installer fails closed instead of silently relying
+  on a self-signed certificate.
 - An occupied 853 is preserved and DoT receives an alternate public port.
 - SlipGate's competing DNS router is disabled and persistently prevented from
   reclaiming 53. Its DNS routes are imported and tunnel services keep running.
@@ -39,6 +43,13 @@ and restarts the services. Configuration snapshots are restored on failure.
   native SlipGate wizard, its destructive port helper is denied access to 53,
   443, 853, and every listener already owned by another running service; an
   alternate port must be chosen instead of stopping a panel or Xray inbound.
+- Panel and firewall protection during native setup is enforced with PATH shims
+  around `fuser`, `iptables`, `nft`, `ufw`, `firewall-cmd`, `systemctl`, and
+  `service`. Upstream installers run as root and can call these tools by
+  absolute path or through syscalls, so the shims are a strong default, not a
+  guarantee. The post-install listener checks are the actual gate: they fail
+  closed if an upstream release violates CottenRouter's ownership plan.
+  Snapshot the server before installing an unreviewed upstream release.
 
 ## Safeguards
 
@@ -73,6 +84,22 @@ The 16 KiB UDP ceiling is a compatibility limit, not a target packet size.
 CottenDNS MTU discovery should continue choosing resolver-safe frames (often a
 few hundred bytes). Increasing the ceiling further raises pooled-buffer RAM,
 fragmentation, loss, and amplification exposure without improving normal
-tunnel throughput. TCP already permits the DNS protocol maximum 65,535-byte
-framed message; larger messages are not valid DNS-over-TCP. Throughput should be
-tuned with worker/concurrency/rate budgets only after observing the dashboard.
+tunnel throughput. DNS-over-TCP frames can in principle carry 65,535 bytes, but
+CottenRouter caps `max_tcp_message_size` at 16 KiB as well: both `max_packet_size`
+and `max_tcp_message_size` are validated to the range 512-16384. Longer TCP
+messages are rejected, not truncated. Throughput should be tuned with
+worker/concurrency/rate budgets only after observing the dashboard.
+
+## Removing CottenRouter itself
+
+`sudo cottenrouter-uninstall` removes the router binary, service, resource
+slice, and CottenRouter-owned service drop-ins. It preserves the router config,
+all upstream project data, panels, pre-existing firewall rules, and swap by
+default. Port-53 rules the installer itself added are removed, using the
+ownership marker it wrote at install time; nothing else in the firewall is
+touched. On `--purge` the `cottenrouter` account is deleted only when the
+installer's account ownership marker records that the installer created it.
+Use `--purge --confirm CottenRouter` for the router config and
+`--remove-swap --confirm CottenRouter` only when the swap ownership marker is
+present. Backend projects have their own separately confirmed removal workflow
+in the Project Manager.

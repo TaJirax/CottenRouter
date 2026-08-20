@@ -21,5 +21,7 @@ jobs:
         run: go test -run 'Test(AllDNSBackendsShareOneFrontendUnderLoad|UDPMaximumPacketRemainsByteTransparent|EncryptedProtocolsRemainIsolatedConcurrently)$' -count=3 ./internal/router
       - run: go test -race ./...
       - run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
       - run: go build ./cmd/cottenrouter
       - run: bash -n scripts/*.sh

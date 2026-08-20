@@ -18,6 +18,9 @@ import (
 	"github.com/TaJirax/CottenRouter/internal/tui"
 )
 
+// version is set by the release build from the git tag.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		if err := runTUI(nil); err != nil {
@@ -42,7 +45,7 @@ func main() {
 		err = installProject(os.Args[2:])
 	case "configure":
 		err = configureProject(os.Args[2:])
-	case "remove":
+	case "remove", "uninstall":
 		err = removeProject(os.Args[2:])
 	case "keys":
 		err = printKeys(os.Args[2:])
@@ -50,6 +53,8 @@ func main() {
 		err = advancedProject(os.Args[2:])
 	case "service":
 		err = manageService(os.Args[2:])
+	case "version", "-v", "--version":
+		fmt.Println("cottenrouter", version)
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -146,8 +151,8 @@ func printCatalog(args []string) error {
 		}
 	}
 	for _, project := range projects {
-		fmt.Printf("%s (%s)\n  repo: %s\n  branch checked: %s\n  installer: %s\n  upstream command: %s\n  service: %s\n",
-			project.Name, project.ID, project.Repository, project.DefaultBranch, project.InstallerURL, project.InstallCommand,
+		fmt.Printf("%s (%s)\n  repo: %s\n  branch checked: %s\n  commit pinned: %s\n  installer: %s\n  upstream command: %s\n  service: %s\n",
+			project.Name, project.ID, project.Repository, project.DefaultBranch, project.CommitSHA, project.InstallerURL, project.InstallCommand,
 			project.Service)
 		if project.Routable {
 			fmt.Printf("  router setting: %s -> %s\n\n", project.ListenSetting, project.DefaultBackend)
@@ -249,6 +254,9 @@ func removeProject(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *project == "" {
+		return fmt.Errorf("--project is required (to remove CottenRouter itself, run sudo cottenrouter-uninstall)")
+	}
 	if *purge && *confirm != *project {
 		return fmt.Errorf("--purge requires --confirm %s", *project)
 	}
@@ -293,5 +301,5 @@ func manageService(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|keys|check|catalog|slipgate-import> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|uninstall|keys|check|catalog|slipgate-import|version> [options]")
 }

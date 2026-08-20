@@ -35,10 +35,21 @@ func QuestionName(packet []byte) (string, error) {
 // ParseQuestion returns the first DNS question and the byte offset immediately
 // after its QCLASS field.
 func ParseQuestion(packet []byte) (Question, error) {
+	return parseQuestion(packet, true)
+}
+
+// ParseReplyQuestion returns the first question echoed back in a DNS reply. It
+// is the same parser as ParseQuestion without the query-direction check, so a
+// forwarder can confirm a reply answers the question it actually asked.
+func ParseReplyQuestion(packet []byte) (Question, error) {
+	return parseQuestion(packet, false)
+}
+
+func parseQuestion(packet []byte, mustBeQuery bool) (Question, error) {
 	if len(packet) < 12 {
 		return Question{}, ErrShortPacket
 	}
-	if binary.BigEndian.Uint16(packet[2:4])&0x8000 != 0 {
+	if mustBeQuery && binary.BigEndian.Uint16(packet[2:4])&0x8000 != 0 {
 		return Question{}, ErrNotQuery
 	}
 	if binary.BigEndian.Uint16(packet[4:6]) == 0 {

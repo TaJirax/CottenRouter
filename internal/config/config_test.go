@@ -14,8 +14,22 @@ func TestValidateDefaultsAndNormalizes(t *testing.T) {
 	if cfg.ListenUDP != "0.0.0.0:53" || cfg.Routes[0].Domains[0] != "vpn.example.com" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
-	if cfg.MaxPacketSize != 16*1024 || cfg.Limits.UDPQueue != 1024 || cfg.AdminListen != "127.0.0.1:9088" {
+	if cfg.MaxPacketSize != 16*1024 || cfg.MaxTCPMessageSize != 16*1024 || cfg.Limits.UDPQueue != 1024 || cfg.AdminListen != "127.0.0.1:9088" || cfg.MaxTLSConnectionsPerProtocol != 128 || cfg.Limits.MaxTLSConnectionsPerIP != 32 {
 		t.Fatalf("unsafe defaults: %+v", cfg)
+	}
+	if cfg.Limits.AggregateResponseBytesPerSecond != 6*cfg.Limits.ResponseBytesPerSecond || cfg.Limits.AggregateIngressBytesPerSecond != 6*cfg.Limits.IngressBytesPerSecond {
+		t.Fatalf("aggregate traffic ceilings do not bound all six protocol classes: %+v", cfg.Limits)
+	}
+}
+
+func TestValidateCapsUDPTCPMessagesAt16KiB(t *testing.T) {
+	for _, cfg := range []Config{
+		{MaxPacketSize: 16*1024 + 1, Routes: []Route{{Name: "one", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:5301"}}},
+		{MaxTCPMessageSize: 16*1024 + 1, Routes: []Route{{Name: "one", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:5301"}}},
+	} {
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected 16 KiB ceiling error")
+		}
 	}
 }
 
@@ -58,10 +72,21 @@ func TestValidateNormalizesTLSRoutes(t *testing.T) {
 
 func TestValidateRejectsRemoteTLSBackend(t *testing.T) {
 	cfg := Config{TLSListeners: []TLSListener{{
-		Name: "dot", Listen: "127.0.0.1:853", DefaultBackend: "192.0.2.1:8853",
+		Name: "dot", Listen: "127.0.0.1:853", DefaultBackend: "192.0.2.1:8853", DefaultRouteName: "default",
 	}}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected remote TLS backend error")
+	}
+}
+
+func TestTLSDefaultBackendRequiresStableRouteName(t *testing.T) {
+	cfg := Config{TLSListeners: []TLSListener{{Name: "tls", Listen: "127.0.0.1:853", DefaultBackend: "127.0.0.1:9443"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unnamed TLS default backend was accepted")
+	}
+	cfg = Config{TLSListeners: []TLSListener{{Name: "tls", Listen: "127.0.0.1:853", DefaultRouteName: "stale"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("orphan TLS default route name was accepted")
 	}
 }
 
@@ -70,11 +95,33 @@ func TestValidateRejectsDNSAndTLSOnSameTCPAddress(t *testing.T) {
 		ListenTCP: "127.0.0.1:53",
 		Routes:    []Route{{Name: "dns", Domains: []string{"dns.example"}, Backend: "127.0.0.1:5301"}},
 		TLSListeners: []TLSListener{{
-			Name: "tls", Listen: "127.0.0.1:53", DefaultBackend: "127.0.0.1:853",
+			Name: "tls", Listen: "127.0.0.1:53", DefaultBackend: "127.0.0.1:853", DefaultRouteName: "default",
 		}},
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected duplicate TCP listener error")
+	}
+}
+
+func TestValidateRejectsTCPPortSharedAcrossDifferentAddresses(t *testing.T) {
+	cfg := Config{
+		ListenTCP: "0.0.0.0:53",
+		Routes:    []Route{{Name: "dns", Domains: []string{"dns.example"}, Backend: "127.0.0.1:5301"}},
+		TLSListeners: []TLSListener{{
+			Name: "tls", Listen: "127.0.0.1:53", DefaultBackend: "127.0.0.1:853", DefaultRouteName: "default",
+		}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected overlapping TCP port error")
+	}
+}
+
+func TestValidateRejectsTLSOnAdminPort(t *testing.T) {
+	cfg := Config{TLSListeners: []TLSListener{{
+		Name: "tls", Listen: "0.0.0.0:9088", DefaultBackend: "127.0.0.1:853", DefaultRouteName: "default",
+	}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected admin/TLS port collision error")
 	}
 }
 

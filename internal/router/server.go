@@ -32,24 +32,31 @@ type Server struct {
 	guard         *guard.Limiter
 	stats         *telemetry.Registry
 
-	mu              sync.Mutex
-	backends        map[string]*backendConn
-	wg              sync.WaitGroup
-	closeOnce       sync.Once
-	maintenanceOnce sync.Once
-	packetPool      sync.Pool
-	tcpCapacity     chan struct{}
-	listenersMu     sync.Mutex
-	connectionsMu   sync.Mutex
-	connections     map[net.Conn]struct{}
+	mu                   sync.Mutex
+	backends             map[string]*backendConn
+	allBackends          map[*backendConn]struct{}
+	backendRetry         map[string]time.Time
+	wg                   sync.WaitGroup
+	closeOnce            sync.Once
+	maintenanceOnce      sync.Once
+	packetPool           sync.Pool
+	tcpCapacity          chan struct{}
+	tlsHandshakeCapacity chan struct{}
+	tlsCapacities        map[string]chan struct{}
+	listenersMu          sync.Mutex
+	connectionsMu        sync.Mutex
+	connections          map[net.Conn]struct{}
 }
 
 type backendConn struct {
-	address string
-	conn    *net.UDPConn
-	mu      sync.Mutex
-	pending map[uint16]pendingQuery
-	nextID  uint16
+	address   string
+	conn      *net.UDPConn
+	mu        sync.Mutex
+	pending   map[uint16]pendingQuery
+	issued    uint32
+	retireAt  time.Time
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type pendingQuery struct {
@@ -57,6 +64,15 @@ type pendingQuery struct {
 	clientID   uint16
 	expiresAt  time.Time
 	route      string
+	// question fingerprints the query so a reply carrying the right transaction
+	// ID but the wrong question cannot consume the mapping.
+	question dnswire.Question
+}
+
+// matches reports whether a reply's echoed question is the one we asked. End is
+// deliberately excluded: only the name, type, and class identify the question.
+func (q pendingQuery) matches(reply dnswire.Question) bool {
+	return q.question.Name == reply.Name && q.question.Type == reply.Type && q.question.Class == reply.Class
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -72,10 +88,15 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	server := &Server{
 		cfg: cfg, routes: table, logger: logger,
-		done: make(chan struct{}), guard: guard.New(cfg.Limits), stats: telemetry.New(), backends: make(map[string]*backendConn),
-		tcpCapacity: make(chan struct{}, cfg.MaxTCPConnections), connections: make(map[net.Conn]struct{}),
+		done: make(chan struct{}), guard: guard.New(cfg.Limits), stats: telemetry.New(), backends: make(map[string]*backendConn), allBackends: make(map[*backendConn]struct{}), backendRetry: make(map[string]time.Time),
+		tcpCapacity: make(chan struct{}, cfg.MaxTCPConnections), tlsHandshakeCapacity: make(chan struct{}, cfg.MaxTLSConnectionsPerProtocol), tlsCapacities: make(map[string]chan struct{}), connections: make(map[net.Conn]struct{}),
 	}
-	server.packetPool.New = func() any { return make([]byte, cfg.MaxPacketSize) }
+	// One extra byte makes an oversized UDP datagram observable instead of
+	// silently forwarding a MaxPacketSize-byte truncation.
+	server.packetPool.New = func() any { return make([]byte, cfg.MaxPacketSize+1) }
+	for _, class := range []string{"doh", "dot", "naiveproxy", "stuntls", "tls/other"} {
+		server.ensureTLSCapacity(class)
+	}
 	for _, route := range cfg.Routes {
 		server.stats.Ensure("dns/udp", route.Name)
 		if route.TCPBackend != "" && route.TCPBackend != "disabled" {
@@ -84,7 +105,14 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	for _, listener := range cfg.TLSListeners {
 		for _, route := range listener.Routes {
-			server.stats.Ensure(classifyTLSProtocol(listener.Name, route.Name), route.Name)
+			protocol := classifyTLSProtocol(listener.Name, route.Name)
+			server.stats.Ensure(protocol, route.Name)
+			server.ensureTLSCapacity(protocol)
+		}
+		if listener.DefaultBackend != "" {
+			protocol := classifyTLSProtocol(listener.Name, listener.DefaultRouteName)
+			server.stats.Ensure(protocol, listener.DefaultRouteName)
+			server.ensureTLSCapacity(protocol)
 		}
 	}
 	return server, nil
@@ -213,6 +241,14 @@ func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
 	for {
 		packet := s.packetPool.Get().([]byte)
 		n, clientAddr, err := listener.ReadFromUDP(packet)
+		if n > s.cfg.MaxPacketSize {
+			// Windows may return WSAEMSGSIZE together with the truncated byte
+			// count; Unix normally returns a successful MaxPacketSize+1 read.
+			// In either case the datagram is consumed and must not be forwarded.
+			s.stats.Drop(false)
+			s.packetPool.Put(packet[:cap(packet)])
+			continue
+		}
 		if err != nil {
 			s.packetPool.Put(packet)
 			finish()
@@ -222,7 +258,8 @@ func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
 			return fmt.Errorf("read client packet: %w", err)
 		}
 		packet = packet[:n]
-		if !s.guard.AllowQuery(ipFromUDP(clientAddr)) {
+		clientIP := ipFromUDP(clientAddr)
+		if !s.guard.AllowQueryIngress(clientIP, n) {
 			s.stats.Drop(true)
 			s.packetPool.Put(packet[:cap(packet)])
 			continue
@@ -281,10 +318,16 @@ func (s *Server) Close() error {
 		}
 		s.connectionsMu.Unlock()
 		s.mu.Lock()
-		for _, backend := range s.backends {
-			_ = backend.conn.Close()
+		backends := make([]*backendConn, 0, len(s.allBackends))
+		for backend := range s.allBackends {
+			backends = append(backends, backend)
 		}
+		clear(s.backends)
+		clear(s.allBackends)
 		s.mu.Unlock()
+		for _, backend := range backends {
+			s.closeBackend(backend, false)
+		}
 	})
 	return closeErr
 }
@@ -352,7 +395,7 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 			}
 			return
 		}
-		if !s.guard.AllowQuery(clientIP) {
+		if !s.guard.AllowQueryIngress(clientIP, len(packet)+2) {
 			s.stats.Drop(true)
 			return
 		}
@@ -367,11 +410,11 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 }
 
 func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []byte) {
-	qname, err := dnswire.QuestionName(packet)
+	question, err := dnswire.ParseQuestion(packet)
 	if err != nil {
 		return
 	}
-	route, ok := s.routes.match(qname)
+	route, ok := s.routes.match(question.Name)
 	if !ok {
 		if s.cfg.UnmatchedAction == "refused" {
 			s.writeTCPMessage(client, writeMu, dnswire.RefusedResponse(packet), s.cfg.QueryTimeout())
@@ -380,13 +423,19 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 	}
 	s.stats.Query("dns/tcp", route.name, len(packet)+2)
 	if route.tcpBackend == "disabled" {
-		s.writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
+		response := dnswire.ErrorResponse(packet, 2)
+		if s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout()) {
+			s.stats.Out("dns/tcp", route.name, len(response)+2)
+		}
 		return
 	}
 	backend, err := net.DialTimeout("tcp", route.tcpBackend, s.cfg.QueryTimeout())
 	if err != nil {
 		s.logger.Debug("TCP backend unavailable", "route", route.name, "backend", route.tcpBackend, "error", err)
-		s.writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
+		response := dnswire.ErrorResponse(packet, 2)
+		if s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout()) {
+			s.stats.Out("dns/tcp", route.name, len(response)+2)
+		}
 		return
 	}
 	defer backend.Close()
@@ -399,8 +448,11 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 		s.stats.Error("dns/tcp", route.name)
 		return
 	}
-	s.stats.Out("dns/tcp", route.name, len(response)+2)
-	s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout())
+	if s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout()) {
+		s.stats.Out("dns/tcp", route.name, len(response)+2)
+	} else {
+		s.stats.Error("dns/tcp", route.name)
+	}
 }
 
 func readTCPMessage(reader io.Reader, maxSize int) ([]byte, error) {
@@ -417,17 +469,18 @@ func readTCPMessage(reader io.Reader, maxSize int) ([]byte, error) {
 	return packet, err
 }
 
-func (s *Server) writeTCPMessage(conn net.Conn, mu *sync.Mutex, packet []byte, timeout time.Duration) {
+func (s *Server) writeTCPMessage(conn net.Conn, mu *sync.Mutex, packet []byte, timeout time.Duration) bool {
 	if len(packet) == 0 || len(packet) > 65535 {
-		return
+		return false
 	}
 	if !s.guard.AllowResponse(len(packet) + 2) {
-		return
+		s.stats.Drop(true)
+		return false
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
-	_ = writeFramedDNS(conn, packet)
+	return writeFramedDNS(conn, packet) == nil
 }
 
 func writeFramedDNS(writer io.Writer, packet []byte) error {
@@ -454,30 +507,31 @@ func writeAll(writer io.Writer, data []byte) error {
 }
 
 func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
-	qname, err := dnswire.QuestionName(packet)
+	question, err := dnswire.ParseQuestion(packet)
 	if err != nil {
 		s.stats.Drop(false)
 		s.logger.Debug("dropping malformed DNS query", "client", clientAddr, "error", err)
 		return
 	}
-	route, ok := s.routes.match(qname)
+	route, ok := s.routes.match(question.Name)
 	if !ok {
 		s.stats.Drop(false)
 		if s.cfg.UnmatchedAction == "refused" {
 			if response := dnswire.RefusedResponse(packet); response != nil {
-				s.writeUDPResponse(response, clientAddr)
+				s.writeUDPResponse(response, clientAddr, "")
 			}
 		}
 		return
 	}
 	s.stats.Query("dns/udp", route.name, len(packet))
 	if response, verified := s.verificationResponse(packet, route); verified {
-		s.writeUDPResponse(response, clientAddr)
+		s.writeUDPResponse(response, clientAddr, route.name)
 		return
 	}
 	backend, err := s.getBackend(route.backend)
 	if err != nil {
-		s.logger.Warn("backend unavailable", "route", route.name, "backend", route.backend, "error", err)
+		s.stats.Error("dns/udp", route.name)
+		s.logger.Debug("backend unavailable", "route", route.name, "backend", route.backend, "error", err)
 		return
 	}
 	if len(packet) < 2 {
@@ -485,23 +539,45 @@ func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
 	}
 
 	clientID := binary.BigEndian.Uint16(packet[:2])
-	serverID, ok := backend.reserve(pendingQuery{
+	query := pendingQuery{
 		clientAddr: clientAddr,
 		clientID:   clientID,
 		expiresAt:  time.Now().Add(s.cfg.QueryTimeout()),
 		route:      route.name,
-	}, s.cfg.MaxPendingPerBackend)
-	if !ok {
-		s.stats.Drop(false)
-		s.logger.Warn("backend pending queue full", "route", route.name, "backend", route.backend)
-		return
+		question:   question,
 	}
+	// Publish the active session before reserve makes the query visible to the
+	// backend reader. A loopback backend can answer immediately after Write;
+	// opening afterward races SessionClose and can leave a phantom +1.
 	s.stats.SessionOpen("dns/udp", route.name)
+	var serverID uint16
+	for {
+		var reserved, exhausted bool
+		serverID, reserved, exhausted = backend.reserve(query, s.cfg.MaxPendingPerBackend)
+		if reserved {
+			break
+		}
+		if !exhausted {
+			s.stats.SessionClose("dns/udp", route.name)
+			s.stats.Drop(false)
+			s.logger.Debug("backend pending queue full", "route", route.name, "backend", route.backend)
+			return
+		}
+		backend, err = s.rotateBackend(route.backend, backend)
+		if err != nil {
+			s.stats.SessionClose("dns/udp", route.name)
+			s.stats.Error("dns/udp", route.name)
+			s.logger.Debug("backend generation rotation failed", "route", route.name, "backend", route.backend, "error", err)
+			return
+		}
+	}
 	binary.BigEndian.PutUint16(packet[:2], serverID)
 	if _, err := backend.conn.Write(packet); err != nil {
-		backend.remove(serverID)
-		s.stats.SessionClose("dns/udp", route.name)
-		s.logger.Warn("forward query failed", "route", route.name, "backend", route.backend, "error", err)
+		// A connected UDP write error means the cached socket is no longer a
+		// reliable path. Evict it immediately; closeBackend drains this and all
+		// other pending queries exactly once, and the next request reconnects.
+		s.dropBackend(backend)
+		s.logger.Debug("forward query failed", "route", route.name, "backend", route.backend, "error", err)
 	}
 }
 
@@ -521,6 +597,13 @@ func (s *Server) getBackend(address string) (*backendConn, error) {
 	if backend := s.backends[address]; backend != nil {
 		return backend, nil
 	}
+	if retryAt := s.backendRetry[address]; time.Now().Before(retryAt) {
+		return nil, fmt.Errorf("backend reconnect is cooling down until %s", retryAt.Format(time.RFC3339Nano))
+	}
+	return s.newBackendLocked(address)
+}
+
+func (s *Server) newBackendLocked(address string) (*backendConn, error) {
 	remote, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, err
@@ -529,8 +612,10 @@ func (s *Server) getBackend(address string) (*backendConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	backend := &backendConn{address: address, conn: conn, pending: make(map[uint16]pendingQuery)}
+	backend := &backendConn{address: address, conn: conn, pending: make(map[uint16]pendingQuery), done: make(chan struct{})}
 	s.backends[address] = backend
+	s.allBackends[backend] = struct{}{}
+	delete(s.backendRetry, address)
 	s.wg.Add(2)
 	go func() {
 		defer s.wg.Done()
@@ -543,45 +628,88 @@ func (s *Server) getBackend(address string) (*backendConn, error) {
 	return backend, nil
 }
 
-func (b *backendConn) reserve(query pendingQuery, limit int) (uint16, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if len(b.pending) >= limit {
-		return 0, false
+// rotateBackend installs a new connected UDP socket after the current socket
+// has issued all 65,536 transaction IDs. The retired socket remains open for
+// two query timeouts, so delayed/duplicate replies stay in their original
+// source-port namespace and can never match a query in the new generation.
+func (s *Server) rotateBackend(address string, exhausted *backendConn) (*backendConn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.done:
+		return nil, net.ErrClosed
+	default:
 	}
-	for attempts := 0; attempts < 65536; attempts++ {
-		b.nextID++
-		if _, exists := b.pending[b.nextID]; !exists {
-			b.pending[b.nextID] = query
-			return b.nextID, true
+	if current := s.backends[address]; current != nil && current != exhausted {
+		return current, nil
+	}
+	if s.backends[address] == nil {
+		if retryAt := s.backendRetry[address]; time.Now().Before(retryAt) {
+			return nil, fmt.Errorf("backend reconnect is cooling down until %s", retryAt.Format(time.RFC3339Nano))
 		}
 	}
-	return 0, false
+	replacement, err := s.newBackendLocked(address)
+	if err != nil {
+		return nil, err
+	}
+	exhausted.mu.Lock()
+	exhausted.retireAt = time.Now().Add(2 * s.cfg.QueryTimeout())
+	exhausted.mu.Unlock()
+	return replacement, nil
 }
 
-func (b *backendConn) take(id uint16) (pendingQuery, bool) {
+// reserve returns exhausted=true only when this socket generation has used
+// every ID. IDs are deliberately never reused on one connected UDP socket;
+// source-port-separated generations provide additional 16-bit namespaces.
+func (b *backendConn) reserve(query pendingQuery, limit int) (id uint16, ok, exhausted bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	select {
+	case <-b.done:
+		return 0, false, false
+	default:
+	}
+	if b.issued >= 1<<16 {
+		return 0, false, true
+	}
+	if len(b.pending) >= limit {
+		return 0, false, false
+	}
+	id = uint16(b.issued)
+	b.issued++
+	b.pending[id] = query
+	return id, true, false
+}
+
+// take consumes the mapping for id only when reply echoes the question that was
+// actually sent under that ID. A mismatch leaves the mapping in place so the
+// genuine reply can still arrive.
+func (b *backendConn) take(id uint16, reply dnswire.Question) (pendingQuery, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	query, ok := b.pending[id]
-	if ok {
-		delete(b.pending, id)
+	if !ok || !query.matches(reply) {
+		return pendingQuery{}, false
 	}
-	return query, ok
-}
-
-func (b *backendConn) remove(id uint16) {
-	b.mu.Lock()
 	delete(b.pending, id)
-	b.mu.Unlock()
+	return query, true
 }
 
 func (s *Server) readBackend(backend *backendConn) {
-	buffer := make([]byte, s.cfg.MaxPacketSize)
+	buffer := make([]byte, s.cfg.MaxPacketSize+1)
 	for {
 		n, err := backend.conn.Read(buffer)
+		if n > s.cfg.MaxPacketSize {
+			s.stats.Drop(false)
+			continue
+		}
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				s.logger.Warn("backend response reader stopped", "backend", backend.address, "error", err)
+			select {
+			case <-s.done:
+				s.closeBackend(backend, false)
+			default:
+				s.logger.Debug("backend response reader restarting", "backend", backend.address, "error", err)
+				s.dropBackend(backend)
 			}
 			return
 		}
@@ -589,7 +717,12 @@ func (s *Server) readBackend(backend *backendConn) {
 			continue
 		}
 		serverID := binary.BigEndian.Uint16(buffer[:2])
-		query, ok := backend.take(serverID)
+		reply, err := dnswire.ParseReplyQuestion(buffer[:n])
+		if err != nil {
+			s.stats.Drop(false)
+			continue
+		}
+		query, ok := backend.take(serverID, reply)
 		if !ok {
 			continue
 		}
@@ -599,18 +732,77 @@ func (s *Server) readBackend(backend *backendConn) {
 			s.stats.Drop(true)
 			continue
 		}
-		s.stats.Out("dns/udp", query.route, n)
-		if _, err := s.listener.WriteToUDP(buffer[:n], query.clientAddr); err != nil && !errors.Is(err, net.ErrClosed) {
+		written, err := s.listener.WriteToUDP(buffer[:n], query.clientAddr)
+		if err != nil || written != n {
+			s.stats.Error("dns/udp", query.route)
+		}
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			s.logger.Debug("client response write failed", "client", query.clientAddr, "error", err)
+			continue
+		}
+		if written == n {
+			s.stats.Out("dns/udp", query.route, n)
 		}
 	}
 }
 
-func (s *Server) writeUDPResponse(packet []byte, client *net.UDPAddr) {
-	if len(packet) == 0 || !s.guard.AllowResponse(len(packet)) {
-		return
+func (s *Server) writeUDPResponse(packet []byte, client *net.UDPAddr, route string) bool {
+	if len(packet) == 0 {
+		return false
 	}
-	_, _ = s.listener.WriteToUDP(packet, client)
+	if !s.guard.AllowResponse(len(packet)) {
+		s.stats.Drop(true)
+		return false
+	}
+	written, err := s.listener.WriteToUDP(packet, client)
+	if err != nil || written != len(packet) {
+		if route != "" {
+			s.stats.Error("dns/udp", route)
+		}
+		return false
+	}
+	if route != "" {
+		s.stats.Out("dns/udp", route, written)
+	}
+	return true
+}
+
+func (s *Server) dropBackend(backend *backendConn) {
+	s.mu.Lock()
+	if s.backends[backend.address] == backend {
+		delete(s.backends, backend.address)
+		s.backendRetry[backend.address] = time.Now().Add(250 * time.Millisecond)
+	}
+	s.mu.Unlock()
+	s.closeBackend(backend, true)
+}
+
+func (s *Server) closeBackend(backend *backendConn, failed bool) {
+	var pending []pendingQuery
+	closed := false
+	backend.closeOnce.Do(func() {
+		closed = true
+		close(backend.done)
+		_ = backend.conn.Close()
+		backend.mu.Lock()
+		pending = make([]pendingQuery, 0, len(backend.pending))
+		for id, query := range backend.pending {
+			pending = append(pending, query)
+			delete(backend.pending, id)
+		}
+		backend.mu.Unlock()
+	})
+	if closed {
+		s.mu.Lock()
+		delete(s.allBackends, backend)
+		s.mu.Unlock()
+	}
+	for _, query := range pending {
+		s.stats.SessionClose("dns/udp", query.route)
+		if failed {
+			s.stats.Error("dns/udp", query.route)
+		}
+	}
 }
 
 func (s *Server) startMaintenance() {
@@ -657,6 +849,105 @@ func ipFromAddr(address net.Addr) netip.Addr {
 	}
 }
 
+func tlsCapacityClass(protocol string) string {
+	switch protocol {
+	case "doh", "dot", "naiveproxy", "stuntls":
+		return protocol
+	default:
+		return "tls/other"
+	}
+}
+
+func (s *Server) ensureTLSCapacity(protocol string) chan struct{} {
+	class := tlsCapacityClass(protocol)
+	if capacity := s.tlsCapacities[class]; capacity != nil {
+		return capacity
+	}
+	capacity := make(chan struct{}, s.cfg.MaxTLSConnectionsPerProtocol)
+	s.tlsCapacities[class] = capacity
+	return capacity
+}
+
+func (s *Server) acquireTLSHandshake(conn net.Conn) (netip.Addr, bool) {
+	clientIP := ipFromAddr(conn.RemoteAddr())
+	if !s.guard.AcquireTLS(clientIP, "handshake") {
+		return clientIP, false
+	}
+	select {
+	case s.tlsHandshakeCapacity <- struct{}{}:
+	case <-s.done:
+		s.guard.ReleaseTLS(clientIP, "handshake")
+		return clientIP, false
+	default:
+		s.guard.ReleaseTLS(clientIP, "handshake")
+		return clientIP, false
+	}
+	if !s.trackConnection(conn) {
+		s.releaseTLSHandshakeLease(clientIP)
+		return clientIP, false
+	}
+	return clientIP, true
+}
+
+// trackConnection registers conn so Close can shut it down, refusing once
+// shutdown has begun. Close closes s.done before sweeping s.connections under
+// connectionsMu, so a refused registration is always a connection the sweep
+// would have missed; the caller closes it instead.
+func (s *Server) trackConnection(conn net.Conn) bool {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	select {
+	case <-s.done:
+		return false
+	default:
+		s.connections[conn] = struct{}{}
+		return true
+	}
+}
+
+func (s *Server) releaseTLSHandshakeLease(clientIP netip.Addr) {
+	<-s.tlsHandshakeCapacity
+	s.guard.ReleaseTLS(clientIP, "handshake")
+}
+
+func (s *Server) releaseTLSHandshake(conn net.Conn, clientIP netip.Addr) {
+	s.releaseTLSHandshakeLease(clientIP)
+	s.untrackConnection(conn)
+}
+
+func (s *Server) acquireTLSProtocol(clientIP netip.Addr, protocol string) bool {
+	class := tlsCapacityClass(protocol)
+	if !s.guard.AcquireTLS(clientIP, class) {
+		return false
+	}
+	capacity := s.tlsCapacities[class]
+	if capacity == nil {
+		s.guard.ReleaseTLS(clientIP, class)
+		return false
+	}
+	select {
+	case capacity <- struct{}{}:
+		return true
+	default:
+		s.guard.ReleaseTLS(clientIP, class)
+		return false
+	}
+}
+
+func (s *Server) releaseTLSProtocol(conn net.Conn, clientIP netip.Addr, protocol string) {
+	class := tlsCapacityClass(protocol)
+	<-s.tlsCapacities[class]
+	s.guard.ReleaseTLS(clientIP, class)
+	s.untrackConnection(conn)
+}
+
+func (s *Server) untrackConnection(conn net.Conn) {
+	_ = conn.Close()
+	s.connectionsMu.Lock()
+	delete(s.connections, conn)
+	s.connectionsMu.Unlock()
+}
+
 func (s *Server) acquireTCPClient(conn net.Conn) (netip.Addr, bool) {
 	clientIP := ipFromAddr(conn.RemoteAddr())
 	if !s.guard.AcquireTCP(clientIP) {
@@ -664,9 +955,12 @@ func (s *Server) acquireTCPClient(conn net.Conn) (netip.Addr, bool) {
 	}
 	select {
 	case s.tcpCapacity <- struct{}{}:
-		s.connectionsMu.Lock()
-		s.connections[conn] = struct{}{}
-		s.connectionsMu.Unlock()
+		if !s.trackConnection(conn) {
+			<-s.tcpCapacity
+			s.guard.ReleaseTCP(clientIP)
+			_ = conn.Close()
+			return clientIP, false
+		}
 		return clientIP, true
 	default:
 		s.guard.ReleaseTCP(clientIP)
@@ -696,6 +990,7 @@ func (s *Server) expirePending(backend *backendConn) {
 	for {
 		select {
 		case now := <-ticker.C:
+			retiredAndDrained := false
 			backend.mu.Lock()
 			for id, query := range backend.pending {
 				if !now.Before(query.expiresAt) {
@@ -703,8 +998,15 @@ func (s *Server) expirePending(backend *backendConn) {
 					s.stats.SessionClose("dns/udp", query.route)
 				}
 			}
+			retiredAndDrained = !backend.retireAt.IsZero() && !now.Before(backend.retireAt) && len(backend.pending) == 0
 			backend.mu.Unlock()
+			if retiredAndDrained {
+				s.closeBackend(backend, false)
+				return
+			}
 		case <-s.done:
+			return
+		case <-backend.done:
 			return
 		}
 	}

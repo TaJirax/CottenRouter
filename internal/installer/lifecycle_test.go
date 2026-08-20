@@ -64,13 +64,54 @@ func TestListenerOwnershipIsProcessSpecific(t *testing.T) {
 func TestCottenDomainsIncludeEncryptedSNIWithoutDroppingOptions(t *testing.T) {
 	spec, _ := FindSpec("cottendns")
 	request := Request{Domain: "dns.example", DoTDomain: "dot.example", DoHDomain: "doh.example", PrivatePort: 5301, EnableDoT: true, EnableDoH: true}
-	configured, err := configure(spec, request, PortPlan{DoTPrivatePort: 8853, DoHPrivatePort: 8443, DoHMode: "router-front"}, []byte("DOMAIN = [\"old\"]\nCUSTOM_OPTION = \"keep\"\n"))
+	configured, err := configure(spec, request, PortPlan{DoTPublicPort: 853, DoTPrivatePort: 8853, DoHPublicPort: 443, DoHPrivatePort: 8443, DoHMode: "router-front"}, []byte("DOMAIN = [\"old\"]\nCUSTOM_OPTION = \"keep\"\nTLS_CERT_FILE = \"/etc/cert.pem\"\nTLS_KEY_FILE = \"/etc/key.pem\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(configured)
 	if !strings.Contains(text, `DOMAIN = ["dns.example", "dot.example", "doh.example"]`) || !strings.Contains(text, `CUSTOM_OPTION = "keep"`) {
 		t.Fatalf("TLS names or advanced option lost:\n%s", text)
+	}
+}
+
+func TestCottenTCPIPv6ListenerRemainsPrivate(t *testing.T) {
+	spec, _ := FindSpec("cottendns")
+	configured, err := configure(spec, Request{Domain: "dns.example", PrivatePort: 5301, EnableTCP: true}, PortPlan{}, []byte("TCP_IPV6_ENABLED = true\nTCP_IPV6_HOST = \"::\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configured), `TCP_IPV6_HOST = "::1"`) {
+		t.Fatalf("IPv6 TCP listener remained public:\n%s", configured)
+	}
+}
+
+func TestAdvancedCottenEncryptedSettingsStaySynchronized(t *testing.T) {
+	listeners := []config.TLSListener{
+		{Name: "dot", Listen: "0.0.0.0:853", Routes: []config.TLSRoute{{Name: "cottendns-dot", ServerNames: []string{"dot.example"}, Backend: "127.0.0.1:8853"}}},
+		{Name: "https", Listen: "0.0.0.0:443", Routes: []config.TLSRoute{{Name: "cottendns-doh", ServerNames: []string{"doh.example"}, Backend: "127.0.0.1:8443"}}},
+	}
+	backend := []byte("DOT_LISTENER_ENABLED = true\nDOT_LISTEN_HOST = \"127.0.0.1\"\nDOT_LISTEN_PORT = 9953\nDOH_LISTENER_ENABLED = false\n")
+	got, err := syncCottenEncryptedRoutes(listeners, backend, []string{"dns.example", "dot.example", "doh.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Routes[0].Backend != "127.0.0.1:9953" || got[0].Routes[0].Name != "cottendns-dot" {
+		t.Fatalf("encrypted routes were stale after advanced edit: %+v", got)
+	}
+}
+
+func TestAdvancedCottenCannotCreateTLSRouteWithoutHostname(t *testing.T) {
+	backend := []byte("DOT_LISTENER_ENABLED = true\nDOT_LISTEN_HOST = \"127.0.0.1\"\nDOT_LISTEN_PORT = 9953\nDOH_LISTENER_ENABLED = false\n")
+	if _, err := syncCottenEncryptedRoutes(nil, backend, []string{"dns.example"}); err == nil {
+		t.Fatal("native TLS enable without a public SNI hostname was accepted")
+	}
+}
+
+func TestAdvancedCottenRejectsRouterFrontDoHWithoutTrustedCertificate(t *testing.T) {
+	listeners := []config.TLSListener{{Name: "https", Listen: "0.0.0.0:443", Routes: []config.TLSRoute{{Name: "cottendns-doh", ServerNames: []string{"doh.example"}, Backend: "127.0.0.1:8443"}}}}
+	backend := []byte("DOH_LISTENER_ENABLED = true\nDOH_COEXIST_MODE = \"front\"\nDOH_TLS_ENABLED = true\nDOH_LISTEN_HOST = \"127.0.0.1\"\nDOH_LISTEN_PORT = 8443\n")
+	if _, err := syncCottenEncryptedRoutes(listeners, backend, []string{"dns.example", "doh.example"}); err == nil || !strings.Contains(err.Error(), "private listener") {
+		t.Fatalf("Advanced accepted silent self-signed DoH fallback: %v", err)
 	}
 }
 
@@ -118,5 +159,103 @@ func TestProtectedFuserShimExecution(t *testing.T) {
 	output, err := exec.Command(shim, "-k", "9443/tcp").CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "delegated:-k 9443/tcp") {
 		t.Fatalf("safe port delegation failed: %v %s", err, output)
+	}
+}
+
+func TestProtectedFirewallShimBlocksMutationAndDelegatesInspection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shim")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-firewall")
+	shim := filepath.Join(dir, "iptables")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nprintf 'delegated:%s' \"$*\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shim, []byte(protectedFirewallScript(real)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(shim, "-t", "nat", "-D", "OUTPUT", "1").CombinedOutput()
+	if err != nil || strings.Contains(string(output), "delegated:") {
+		t.Fatalf("firewall mutation reached native tool: %v %s", err, output)
+	}
+	output, err = exec.Command(shim, "-t", "nat", "-S").CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "delegated:-t nat -S") {
+		t.Fatalf("read-only firewall command was not delegated: %v %s", err, output)
+	}
+}
+
+func TestProtectedSystemctlShimPreservesArguments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shim")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-systemctl")
+	shim := filepath.Join(dir, "systemctl")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nprintf 'delegated:%s' \"$*\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shim, []byte(protectedSystemctlScript(real, []string{"x-ui.service"})), 0755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(shim, "--no-block", "restart", "x-ui.service").CombinedOutput()
+	if err != nil || strings.Contains(string(output), "delegated:") {
+		t.Fatalf("protected service restart reached native tool: %v %s", err, output)
+	}
+	output, err = exec.Command(shim, "is-active", "--quiet", "x-ui.service").CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "delegated:is-active --quiet x-ui.service") {
+		t.Fatalf("safe systemctl command lost arguments: %v %s", err, output)
+	}
+}
+
+func TestProtectedPersistentFirewallShimsBlockWrites(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shim")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-firewall")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nprintf 'delegated:%s' \"$*\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		name string
+		args []string
+	}{
+		{name: "ufw", args: []string{"allow", "443/tcp"}},
+		{name: "firewall-cmd", args: []string{"--permanent", "--add-port=443/tcp"}},
+		{name: "iptables-save", args: nil},
+		{name: "iptables-restore", args: nil},
+	} {
+		shim := filepath.Join(dir, fixture.name)
+		if err := os.WriteFile(shim, []byte(protectedPersistentFirewallScript(fixture.name, real)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		output, err := exec.Command(shim, fixture.args...).CombinedOutput()
+		if err != nil || strings.Contains(string(output), "delegated:") {
+			t.Fatalf("%s mutation reached native tool: %v %s", fixture.name, err, output)
+		}
+	}
+	shim := filepath.Join(dir, "ufw")
+	output, err := exec.Command(shim, "status").CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "delegated:status") {
+		t.Fatalf("read-only ufw status was not delegated: %v %s", err, output)
+	}
+}
+
+func TestAtomicWriteRefusesSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "managed")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := atomicWrite(filepath.Join(link, "config.json"), []byte("secret"), 0600); err == nil {
+		t.Fatal("atomic write followed a symlinked parent")
+	}
+	if _, err := os.Stat(filepath.Join(target, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("symlink target was modified: %v", err)
 	}
 }

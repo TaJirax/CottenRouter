@@ -38,7 +38,10 @@ type statusMsg struct {
 	err       error
 }
 type serviceState struct{ name, state string }
-type installDoneMsg struct{ err error }
+type installDoneMsg struct {
+	err                error
+	operation, project string
+}
 type tickMsg time.Time
 
 type field struct {
@@ -88,8 +91,18 @@ func tick() tea.Cmd {
 }
 
 func (m Model) refresh() tea.Cmd {
+	previous := make(map[string]string, len(m.services))
+	for _, service := range m.services {
+		previous[service.name] = service.state
+	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		// Every probe gets its own budget. A single shared deadline made one slow
+		// admin request or ss call expire the context for the systemctl probes
+		// that follow, which then reported every service as offline.
+		probe := func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		}
+		ctx, cancel := probe()
 		defer cancel()
 		msg := statusMsg{}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, m.adminURL, nil)
@@ -106,13 +119,26 @@ func (m Model) refresh() tea.Cmd {
 			serviceSpecs = append(serviceSpecs, struct{ name, service string }{spec.Name, spec.Service})
 		}
 		for _, spec := range serviceSpecs {
-			state := "not installed"
-			if output, err := exec.CommandContext(ctx, "systemctl", "is-active", spec.service).Output(); err == nil {
-				state = strings.TrimSpace(string(output))
+			serviceCtx, serviceCancel := probe()
+			// systemctl exits non-zero for inactive, failed, and unknown units but
+			// still names the state on stdout. Trust the word, not the exit code.
+			output, _ := exec.CommandContext(serviceCtx, "systemctl", "is-active", spec.service).Output()
+			serviceCancel()
+			state := strings.TrimSpace(string(output))
+			if state == "" {
+				// The probe itself failed. Keep the last known state rather than
+				// claiming a running service went offline.
+				if last, ok := previous[spec.name]; ok {
+					state = last
+				} else {
+					state = "unknown"
+				}
 			}
 			msg.services = append(msg.services, serviceState{name: spec.name, state: state})
 		}
-		if output, err := exec.CommandContext(ctx, "ss", "-H", "-lntup").CombinedOutput(); err == nil {
+		listenerCtx, listenerCancel := probe()
+		defer listenerCancel()
+		if output, err := exec.CommandContext(listenerCtx, "ss", "-H", "-lntup").CombinedOutput(); err == nil {
 			msg.listeners = installer.ParseSS(string(output))
 		}
 		msg.projects, _ = installer.Discover(m.routerConfig)
@@ -133,16 +159,24 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refresh(), tick())
 	case installDoneMsg:
 		m.form = false
+		operation := msg.operation
+		if operation == "" {
+			operation = m.operation
+		}
+		project := msg.project
+		if project == "" && len(m.projects) > 0 && m.cursor >= 0 && m.cursor < len(m.projects) {
+			project = m.projects[m.cursor].Name
+		}
 		if msg.err != nil {
-			m.notice = strings.Title(m.operation) + " failed: " + msg.err.Error()
+			m.notice = fmt.Sprintf("%s for %s failed: %v", actionLabel(operation), project, msg.err)
+			m.queue = nil
 		} else {
-			m.notice = strings.Title(m.operation) + " completed safely."
+			m.notice = fmt.Sprintf("%s for %s completed safely.", actionLabel(operation), project)
 		}
-		if msg.err == nil && len(m.queue) > 0 {
-			m.cursor, m.queue = m.queue[0], m.queue[1:]
-			m.beginForm("install")
-			return m, nil
+		if msg.err == nil && operation == "install" && len(m.queue) > 0 {
+			return m, m.startNextInstall()
 		}
+		m.operation = ""
 		return m, m.refresh()
 	case tea.KeyMsg:
 		if m.form {
@@ -185,40 +219,85 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", "e":
 			if m.tab == 1 {
+				spec := m.projects[m.cursor]
+				state := m.projectStates[spec.ID]
+				if spec.Kind == installer.ConfigSlipGate {
+					m.queue = nil
+					if state.Installed {
+						m.operation = "advanced settings"
+						return m, m.projectCmd("advanced")
+					}
+					m.operation = "install"
+					return m, m.directInstallCmd()
+				}
 				operation := "install"
-				if m.projectStates[m.projects[m.cursor].ID].Installed {
+				if state.Installed {
 					operation = "configure"
 				}
 				m.beginForm(operation)
 			}
 		case "i":
 			if m.tab == 1 {
-				m.beginSelectedInstall()
+				return m, m.beginSelectedInstall()
 			}
 		case "u":
 			if m.tab == 1 {
+				state := m.projectStates[m.projects[m.cursor].ID]
+				if !state.Installed {
+					m.notice = "This project is not installed."
+					return m, nil
+				}
+				if !state.Integrated {
+					m.notice = "This project is already detached from CottenRouter."
+					return m, nil
+				}
 				m.confirm, m.notice = "detach", "Detach this project and keep its files? Press y/n."
 			}
 		case "x":
 			if m.tab == 1 {
+				if !m.projectStates[m.projects[m.cursor].ID].Installed {
+					m.notice = "This project is not installed."
+					return m, nil
+				}
 				m.confirm, m.notice = "purge", "PERMANENTLY delete this managed project directory? Press y/n."
 			}
 		case "v":
 			if m.tab == 1 {
+				if !m.projectStates[m.projects[m.cursor].ID].Installed {
+					m.notice = "Install this project before viewing its keys."
+					return m, nil
+				}
 				m.operation = "keys"
 				return m, m.keysCmd(false)
 			}
 		case "V":
 			if m.tab == 1 {
-				m.confirm, m.notice = "reveal", "Reveal client secrets on screen? Press y/n."
+				if !m.projectStates[m.projects[m.cursor].ID].Installed {
+					m.notice = "Install this project before viewing its keys."
+					return m, nil
+				}
+				m.confirm, m.notice = "reveal", "Reveal client secrets? Plaintext will remain in terminal scrollback. Press y/n."
 			}
 		case "a":
 			if m.tab == 1 {
+				if !m.projectStates[m.projects[m.cursor].ID].Installed {
+					m.notice = "Install this project before opening Advanced settings."
+					return m, nil
+				}
 				m.operation = "advanced settings"
 				return m, m.projectCmd("advanced")
 			}
 		case "s":
 			if m.tab == 1 {
+				spec := m.projects[m.cursor]
+				if !m.projectStates[spec.ID].Installed {
+					m.notice = "Install this project before restarting its service."
+					return m, nil
+				}
+				if spec.Kind == installer.ConfigSlipGate {
+					m.notice = "Manage SlipGate's individual tunnel services through Advanced settings."
+					return m, nil
+				}
 				m.operation = "service restart"
 				return m, m.projectCmd("service", "--action", "restart")
 			}
@@ -233,6 +312,9 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.form = false
+		m.queue = nil
+		m.operation = ""
+		m.notice = "Installation cancelled."
 		return m, nil
 	case "ctrl+t":
 		m.enableTCP = !m.enableTCP
@@ -266,6 +348,11 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) beginForm(operation string) {
 	spec := m.projects[m.cursor]
+	if spec.Kind == installer.ConfigSlipGate {
+		m.form = false
+		m.notice = "SlipGate uses its native multi-tunnel setup in Advanced settings."
+		return
+	}
 	m.form, m.fieldIndex, m.notice, m.operation = true, 0, "", operation
 	m.enableTCP, m.enableDoT, m.enableDoH = spec.SupportsTCP, false, false
 	m.fields = nil
@@ -302,7 +389,7 @@ func (m *Model) beginForm(operation string) {
 	m.fields[0].input.Focus()
 }
 
-func (m *Model) beginSelectedInstall() {
+func (m *Model) beginSelectedInstall() tea.Cmd {
 	m.queue = nil
 	hadSelection := false
 	for index := range m.projects {
@@ -315,13 +402,26 @@ func (m *Model) beginSelectedInstall() {
 	}
 	if hadSelection && len(m.queue) == 0 {
 		m.notice = "Every selected project is already installed; use enter/e to edit it."
-		return
+		return nil
 	}
 	if len(m.queue) == 0 {
 		m.queue = []int{m.cursor}
 	}
+	return m.startNextInstall()
+}
+
+func (m *Model) startNextInstall() tea.Cmd {
+	if len(m.queue) == 0 {
+		return nil
+	}
 	m.cursor, m.queue = m.queue[0], m.queue[1:]
+	m.operation = "install"
+	if m.projects[m.cursor].Kind == installer.ConfigSlipGate {
+		m.form = false
+		return m.directInstallCmd()
+	}
 	m.beginForm("install")
+	return nil
 }
 
 func newField(key, label, value string) field {
@@ -341,7 +441,7 @@ func (m Model) installCmd() tea.Cmd {
 	spec := m.projects[m.cursor]
 	executable, err := os.Executable()
 	if err != nil {
-		return func() tea.Msg { return installDoneMsg{err: err} }
+		return func() tea.Msg { return installDoneMsg{err: err, operation: m.operation, project: spec.Name} }
 	}
 	operation := m.operation
 	if operation == "" {
@@ -364,45 +464,85 @@ func (m Model) installCmd() tea.Cmd {
 		args = append(args, "--doh", "--doh-domain", values["doh"])
 	}
 	command := exec.Command(executable, args...)
-	return tea.ExecProcess(command, func(err error) tea.Msg { return installDoneMsg{err: err} })
+	return tea.ExecProcess(command, func(err error) tea.Msg {
+		return installDoneMsg{err: err, operation: operation, project: spec.Name}
+	})
+}
+
+func (m Model) directInstallCmd() tea.Cmd {
+	spec := m.projects[m.cursor]
+	executable, err := os.Executable()
+	if err != nil {
+		return func() tea.Msg { return installDoneMsg{err: err, operation: "install", project: spec.Name} }
+	}
+	args := []string{"install", "--project", spec.ID, "--router-config", m.routerConfig}
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg {
+		return installDoneMsg{err: err, operation: "install", project: spec.Name}
+	})
 }
 
 func (m Model) removeCmd(purge bool) tea.Cmd {
 	executable, err := os.Executable()
 	if err != nil {
-		return func() tea.Msg { return installDoneMsg{err: err} }
+		return func() tea.Msg {
+			return installDoneMsg{err: err, operation: m.operation, project: m.projects[m.cursor].Name}
+		}
 	}
 	spec := m.projects[m.cursor]
 	args := []string{"remove", "--project", spec.ID, "--router-config", m.routerConfig}
 	if purge {
 		args = append(args, "--purge", "--confirm", spec.ID)
 	}
-	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
+	operation := "detach"
+	if purge {
+		operation = "purge"
+	}
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg {
+		return installDoneMsg{err: err, operation: operation, project: spec.Name}
+	})
 }
 
 func (m Model) keysCmd(reveal bool) tea.Cmd {
 	executable, err := os.Executable()
 	if err != nil {
-		return func() tea.Msg { return installDoneMsg{err: err} }
+		return func() tea.Msg {
+			return installDoneMsg{err: err, operation: m.operation, project: m.projects[m.cursor].Name}
+		}
 	}
 	args := []string{"keys", "--project", m.projects[m.cursor].ID}
 	if reveal {
 		args = append(args, "--show-secrets")
 	}
-	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
+	operation := "key lookup"
+	if reveal {
+		operation = "secret reveal"
+	}
+	project := m.projects[m.cursor].Name
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg {
+		return installDoneMsg{err: err, operation: operation, project: project}
+	})
 }
 
 func (m Model) projectCmd(command string, extra ...string) tea.Cmd {
 	executable, err := os.Executable()
 	if err != nil {
-		return func() tea.Msg { return installDoneMsg{err: err} }
+		return func() tea.Msg {
+			return installDoneMsg{err: err, operation: m.operation, project: m.projects[m.cursor].Name}
+		}
 	}
 	args := []string{command, "--project", m.projects[m.cursor].ID}
 	if command == "advanced" {
 		args = append(args, "--router-config", m.routerConfig)
 	}
 	args = append(args, extra...)
-	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
+	operation := m.operation
+	if operation == "" {
+		operation = command
+	}
+	project := m.projects[m.cursor].Name
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg {
+		return installDoneMsg{err: err, operation: operation, project: project}
+	})
 }
 
 func (m Model) View() string {
@@ -500,7 +640,11 @@ func (m Model) installView(width int) string {
 		if domain == "" {
 			domain = "-"
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%s %-15s %-10s :%-5d %-25s %s", cursor, check, spec.Name, status, choosePort(state.PrivatePort, spec.DefaultPort), trim(domain, 25), caps)))
+		port := fmt.Sprintf(":%-5d", choosePort(state.PrivatePort, spec.DefaultPort))
+		if spec.Kind == installer.ConfigSlipGate {
+			port = "multi "
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s%s %-15s %-10s %-6s %-25s %s", cursor, check, spec.Name, status, port, trim(domain, 25), caps)))
 	}
 	if m.notice != "" && m.confirm == "" {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(yellow).Render(m.notice))
@@ -508,9 +652,9 @@ func (m Model) installView(width int) string {
 	if m.confirm != "" {
 		lines = append(lines, "", lipgloss.NewStyle().Bold(true).Foreground(red).Render(m.notice))
 	}
-	lines = append(lines, "", lipgloss.NewStyle().Foreground(muted).Render("space select · i install selected · enter/e common settings · a advanced · s restart"))
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(muted).Render("space select · i install selected · enter/e setup or common settings · a advanced · s restart"))
 	lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("u detach · x purge · v key paths · V reveal keys"))
-	lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("Detach preserves data. Purge requires confirmation. Native advanced prompts remain available on first install."))
+	lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("Detach preserves data. Purge requires confirmation. SlipGate uses its native multi-tunnel setup."))
 	return panel.Width(width).Render(strings.Join(lines, "\n")) + "\n"
 }
 
@@ -599,6 +743,14 @@ func onOff(value bool) string {
 		return "ON"
 	}
 	return "off"
+}
+
+func actionLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "Operation"
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 func choosePort(current, fallback int) int {

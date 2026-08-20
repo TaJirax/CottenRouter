@@ -3,7 +3,9 @@ package installer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,19 +30,28 @@ type Credential struct {
 	Sensitive          bool
 }
 
+type managedServiceState struct {
+	name, active, enabled string
+}
+
 func Discover(routerConfig string) ([]ProjectState, error) {
 	integrated := map[string]bool{}
 	tcpEnabled := map[string]bool{}
 	tlsDomains := map[string]string{}
+	var routerTLSListeners []config.TLSListener
 	if data, err := os.ReadFile(routerConfig); err == nil {
 		var cfg config.Config
 		if json.Unmarshal(data, &cfg) == nil {
+			routerTLSListeners = cfg.TLSListeners
 			for _, route := range cfg.Routes {
 				integrated[route.Name] = true
 				tcpEnabled[route.Name] = route.TCPBackend != "" && route.TCPBackend != "disabled"
 			}
 			for _, listener := range cfg.TLSListeners {
 				for _, route := range listener.Routes {
+					if managedSlipGateTLSRoute(route.Name) {
+						integrated["slipgate"] = true
+					}
 					if len(route.ServerNames) > 0 {
 						tlsDomains[route.Name] = route.ServerNames[0]
 					}
@@ -62,6 +73,11 @@ func Discover(routerConfig string) ([]ProjectState, error) {
 		if spec.Kind == ConfigSlipGate {
 			for name := range integrated {
 				state.Integrated = state.Integrated || strings.HasPrefix(name, "slipgate:")
+			}
+			if err == nil {
+				if plan, planErr := BuildSlipGateTLSPlan(data, SlipGateTLSOptions{ReadFile: os.ReadFile}); planErr == nil {
+					state.Integrated = state.Integrated || slipGateTLSPlanIntegrated(routerTLSListeners, plan)
+				}
 			}
 		}
 		if err == nil {
@@ -232,6 +248,9 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 	if err != nil {
 		return PortPlan{}, err
 	}
+	if spec.Kind == ConfigSlipGate {
+		return PortPlan{}, fmt.Errorf("SlipGate uses multiple native tunnels; use Advanced to edit and re-integrate it")
+	}
 	data, err := os.ReadFile(spec.ConfigPath)
 	if err != nil {
 		return PortPlan{}, fmt.Errorf("%s is not installed: %w", spec.Name, err)
@@ -248,48 +267,110 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 		}
 	}
 	plan := PlanPorts(filtered, request)
+	if plan.DNSPort == 0 || (request.EnableDoT && (plan.DoTPublicPort == 0 || plan.DoTPrivatePort == 0)) || (request.EnableDoH && (plan.DoHPublicPort == 0 || plan.DoHPrivatePort == 0)) {
+		return plan, fmt.Errorf("no safe private port is available")
+	}
 	request.PrivatePort = plan.DNSPort
 	configured, err := configure(spec, request, plan, data)
 	if err != nil {
 		return plan, err
 	}
-	previousRouter, routerErr := os.ReadFile(request.RouterConfig)
+	previousRouter, err := os.ReadFile(request.RouterConfig)
+	if err != nil {
+		return plan, fmt.Errorf("read CottenRouter config: %w", err)
+	}
+	serviceState := managedServiceState{name: spec.Service}
+	if spec.Kind != ConfigSlipGate {
+		if output, outputErr := m.Runner.Output(ctx, "systemctl", "is-active", spec.Service); outputErr == nil || len(output) > 0 {
+			serviceState.active = strings.TrimSpace(string(output))
+		}
+		if output, outputErr := m.Runner.Output(ctx, "systemctl", "is-enabled", spec.Service); outputErr == nil || len(output) > 0 {
+			serviceState.enabled = strings.TrimSpace(string(output))
+		}
+	}
+	mutated := false
+	rollback := func() {
+		if !mutated {
+			return
+		}
+		_ = atomicWrite(spec.ConfigPath, data, 0600)
+		_ = atomicWrite(request.RouterConfig, previousRouter, 0640)
+		if spec.Kind != ConfigSlipGate {
+			restoreManagedServicesExact([]managedServiceState{serviceState}, m.Runner)
+		}
+		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+	}
 	if err := atomicWrite(spec.ConfigPath, configured, 0600); err != nil {
 		return plan, err
 	}
+	mutated = true
 	if err := updateRouterConfig(request.RouterConfig, spec, request, plan); err != nil {
-		_ = atomicWrite(spec.ConfigPath, data, 0600)
+		rollback()
 		return plan, err
 	}
 	if spec.Kind == ConfigSlipGate {
 		if err := m.installContainment(ctx, spec); err != nil {
-			_ = atomicWrite(spec.ConfigPath, data, 0600)
-			if routerErr == nil {
-				_ = atomicWrite(request.RouterConfig, previousRouter, 0644)
-			}
+			rollback()
 			return plan, err
 		}
-		_ = m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
-	} else if err := m.Runner.Run(ctx, "systemctl", []string{"restart", spec.Service}, "/", false); err != nil {
-		_ = atomicWrite(spec.ConfigPath, data, 0600)
-		if routerErr == nil {
-			_ = atomicWrite(request.RouterConfig, previousRouter, 0644)
+		if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false); err != nil {
+			rollback()
+			return plan, err
 		}
+	} else if err := m.Runner.Run(ctx, "systemctl", []string{"enable", "--now", spec.Service}, "/", false); err != nil {
+		rollback()
 		return plan, err
 	}
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
-		_ = atomicWrite(spec.ConfigPath, data, 0600)
-		if routerErr == nil {
-			_ = atomicWrite(request.RouterConfig, previousRouter, 0644)
-		}
-		if spec.Kind != ConfigSlipGate {
-			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", spec.Service}, "/", false)
-		}
-		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		rollback()
 		return plan, err
 	}
+	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
+		rollback()
+		return plan, fmt.Errorf("CottenRouter did not become active: %w", err)
+	}
+	if err := m.waitForRouterListeners(ctx, request.RouterConfig); err != nil {
+		rollback()
+		return plan, err
+	}
+	if spec.Kind != ConfigSlipGate {
+		if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", spec.Service}, "/", false); err != nil {
+			rollback()
+			return plan, fmt.Errorf("%s did not become active: %w", spec.Name, err)
+		}
+		if err := m.waitForPrivateListeners(ctx, spec, request, plan); err != nil {
+			rollback()
+			return plan, err
+		}
+	}
+	for _, target := range publicPorts(request, plan) {
+		if err := openFirewall(ctx, m.Runner, target); err != nil {
+			rollback()
+			return plan, fmt.Errorf("open public %d/%s: %w", target.port, target.protocol, err)
+		}
+	}
+	mutated = false
 	progress("Configuration updated without rerunning the upstream installer")
 	return plan, nil
+}
+
+func restoreManagedServicesExact(states []managedServiceState, runner Runner) {
+	for _, state := range states {
+		if state.name == "" || state.name == "slipgate-dnsrouter" {
+			continue
+		}
+		switch state.enabled {
+		case "enabled", "enabled-runtime", "linked", "linked-runtime", "alias":
+			_ = runner.Run(context.Background(), "systemctl", []string{"enable", state.name}, "/", false)
+		default:
+			_ = runner.Run(context.Background(), "systemctl", []string{"disable", state.name}, "/", false)
+		}
+		if state.active == "active" || state.active == "activating" {
+			_ = runner.Run(context.Background(), "systemctl", []string{"start", state.name}, "/", false)
+		} else {
+			_ = runner.Run(context.Background(), "systemctl", []string{"stop", state.name}, "/", false)
+		}
+	}
 }
 
 func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, purge bool) error {
@@ -310,8 +391,16 @@ func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, pur
 	if err != nil {
 		return err
 	}
-	if err := removeProjectConfig(routerConfig, spec); err != nil {
-		return err
+	var slipGateTLSPlan SlipGateTLSPlan
+	if spec.Kind == ConfigSlipGate {
+		backendData, readErr := os.ReadFile(spec.ConfigPath)
+		if readErr != nil {
+			return fmt.Errorf("read SlipGate config before detach: %w", readErr)
+		}
+		slipGateTLSPlan, err = BuildSlipGateTLSPlan(backendData, SlipGateTLSOptions{ReadFile: os.ReadFile})
+		if err != nil {
+			return fmt.Errorf("snapshot SlipGate TLS routes before detach: %w", err)
+		}
 	}
 	services := []string{spec.Service}
 	if spec.Kind == ConfigSlipGate {
@@ -324,31 +413,100 @@ func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, pur
 			}
 		}
 	}
+	states := make([]managedServiceState, 0, len(services))
 	for _, service := range services {
-		if safeServiceName(service) {
-			_ = m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", service}, "/", false)
+		if !safeServiceName(service) {
+			return fmt.Errorf("unsafe systemd service name %q", service)
 		}
-	}
-	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
-		_ = atomicWrite(routerConfig, routerPrevious, 0644)
-		for _, service := range services {
-			if safeServiceName(service) && service != "slipgate-dnsrouter" {
-				_ = m.Runner.Run(context.Background(), "systemctl", []string{"enable", "--now", service}, "/", false)
+		state := managedServiceState{name: service}
+		if output, _ := m.Runner.Output(ctx, "systemctl", "is-active", service); len(output) > 0 {
+			state.active = strings.TrimSpace(string(output))
+		}
+		if output, _ := m.Runner.Output(ctx, "systemctl", "is-enabled", service); len(output) > 0 {
+			state.enabled = strings.TrimSpace(string(output))
+		}
+		states = append(states, state)
+		if state.active == "active" || state.enabled == "enabled" {
+			if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", service}, "/", false); err != nil {
+				restoreManagedServices(states, m.Runner)
+				return fmt.Errorf("stop %s: %w", service, err)
 			}
 		}
+	}
+	if err := removeProjectConfigWithSlipGateTLS(routerConfig, spec, slipGateTLSPlan); err != nil {
+		restoreManagedServices(states, m.Runner)
+		return err
+	}
+	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
+		_ = atomicWrite(routerConfig, routerPrevious, 0640)
+		restoreManagedServices(states, m.Runner)
+		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		return err
+	}
+	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
+		_ = atomicWrite(routerConfig, routerPrevious, 0644)
+		restoreManagedServices(states, m.Runner)
+		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		return fmt.Errorf("CottenRouter did not become active after detach: %w", err)
+	}
+	if err := m.waitForRouterListeners(ctx, routerConfig); err != nil {
+		_ = atomicWrite(routerConfig, routerPrevious, 0644)
+		restoreManagedServices(states, m.Runner)
 		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
 		return err
 	}
 	if purge {
+		if err := m.runNativeUninstall(ctx, spec); err != nil {
+			_ = atomicWrite(routerConfig, routerPrevious, 0640)
+			restoreManagedServices(states, m.Runner)
+			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+			return fmt.Errorf("native %s uninstall failed; configuration restored: %w", spec.Name, err)
+		}
+		for _, service := range services {
+			dropIn := filepath.Join("/etc/systemd/system", service+".service.d", "cottenrouter.conf")
+			if err := os.Remove(dropIn); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove %s integration: %w", service, err)
+			}
+			_ = os.Remove(filepath.Dir(dropIn))
+			unit := filepath.Join("/etc/systemd/system", service+".service")
+			if err := os.Remove(unit); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove leftover %s unit: %w", service, err)
+			}
+		}
 		clean := filepath.Clean(spec.WorkDir)
 		if clean == "/" || clean == "/opt" || clean == "/etc" {
 			return fmt.Errorf("refusing unsafe purge path %q", clean)
 		}
+		if err := rejectSymlinkComponents(clean); err != nil {
+			return err
+		}
 		if err := os.RemoveAll(clean); err != nil {
+			return err
+		}
+		if err := removeInstallRecord(spec.ID); err != nil {
+			return err
+		}
+		if err := m.Runner.Run(ctx, "systemctl", []string{"daemon-reload"}, "/", false); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func restoreManagedServices(states []managedServiceState, runner Runner) {
+	for _, state := range states {
+		if state.name == "slipgate-dnsrouter" {
+			continue
+		}
+		switch {
+		case state.enabled == "enabled" && state.active == "active":
+			_ = runner.Run(context.Background(), "systemctl", []string{"enable", "--now", state.name}, "/", false)
+		case state.enabled == "enabled":
+			_ = runner.Run(context.Background(), "systemctl", []string{"enable", state.name}, "/", false)
+		case state.active == "active":
+			_ = runner.Run(context.Background(), "systemctl", []string{"start", state.name}, "/", false)
+		}
+	}
 }
 
 // Advanced opens the upstream-native configuration surface, then validates
@@ -376,11 +534,75 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 	if err != nil {
 		return err
 	}
+	var previousSlipGateTLSPlan, slipGateTLSPlan SlipGateTLSPlan
+	var previousSlipGateTLSServiceStates []managedServiceState
 	if spec.Kind == ConfigSlipGate {
-		_ = m.Runner.Run(ctx, "systemctl", []string{"stop", "cottenrouter"}, "/", false)
-		if err := m.runProtectedSlipGate(ctx, spec.WorkDir); err != nil {
-			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		listeners, err := m.Scan(ctx)
+		if err != nil {
 			return err
+		}
+		previousSlipGateTLSPlan, err = BuildSlipGateTLSPlan(backendPrevious, SlipGateTLSOptions{Listeners: listeners, ReadFile: os.ReadFile})
+		if err != nil {
+			return fmt.Errorf("snapshot existing SlipGate TLS integration: %w", err)
+		}
+		previousSlipGateTLSServiceStates, err = snapshotSlipGateManagedServiceStates(ctx, m.Runner)
+		if err != nil {
+			return err
+		}
+	}
+	var slipGateTLSTransaction *slipGateTLSPatchTransaction
+	rollback := func() error {
+		var result error
+		if slipGateTLSTransaction != nil {
+			result = errors.Join(result, slipGateTLSTransaction.Rollback())
+		}
+		if spec.Kind == ConfigSlipGate {
+			stopNewSlipGateManagedServices(previousSlipGateTLSServiceStates, m.Runner)
+			result = errors.Join(result, restoreSlipGateTLSArtifacts(previousSlipGateTLSPlan))
+		}
+		if writeErr := atomicWrite(spec.ConfigPath, backendPrevious, 0600); writeErr != nil {
+			result = errors.Join(result, fmt.Errorf("restore backend config: %w", writeErr))
+		}
+		if writeErr := atomicWrite(routerConfig, routerPrevious, 0640); writeErr != nil {
+			result = errors.Join(result, fmt.Errorf("restore router config: %w", writeErr))
+		}
+		if spec.Kind == ConfigSlipGate {
+			_ = m.Runner.Run(context.Background(), "systemctl", []string{"daemon-reload"}, "/", false)
+			restoreManagedServicesExact(previousSlipGateTLSServiceStates, m.Runner)
+			_ = m.Runner.Run(context.Background(), "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
+		} else {
+			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", spec.Service}, "/", false)
+		}
+		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		return result
+	}
+	fail := func(cause error) error { return errors.Join(cause, rollback()) }
+	if spec.Kind == ConfigSlipGate {
+		if err := m.Runner.Run(ctx, "systemctl", []string{"stop", "cottenrouter"}, "/", false); err != nil {
+			return fmt.Errorf("stop CottenRouter before SlipGate Advanced: %w", err)
+		}
+		if err := m.runProtectedSlipGate(ctx, spec.WorkDir); err != nil {
+			return fail(err)
+		}
+		configured, err := os.ReadFile(spec.ConfigPath)
+		if err != nil {
+			return fail(fmt.Errorf("read configured SlipGate TLS transports: %w", err))
+		}
+		listeners, err := m.Scan(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		listeners = m.protectPanels(ctx, listeners)
+		slipGateTLSPlan, err = BuildSlipGateTLSPlan(configured, SlipGateTLSOptions{Listeners: listeners, ReadFile: os.ReadFile})
+		if err != nil {
+			return fail(fmt.Errorf("plan SlipGate TLS integration: %w", err))
+		}
+		if err := validateSlipGateTLSPublicPorts(slipGateTLSPlan, listeners, routerConfig); err != nil {
+			return fail(err)
+		}
+		slipGateTLSTransaction, err = applySlipGateTLSPatches(slipGateTLSPlan)
+		if err != nil {
+			return fail(err)
 		}
 	} else {
 		editor := os.Getenv("EDITOR")
@@ -394,38 +616,101 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 			return err
 		}
 	}
-	rollback := func() {
-		_ = atomicWrite(spec.ConfigPath, backendPrevious, 0600)
-		_ = atomicWrite(routerConfig, routerPrevious, 0644)
-		if spec.Kind == ConfigSlipGate {
-			_ = m.Runner.Run(context.Background(), "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
-		} else {
-			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", spec.Service}, "/", false)
-		}
-		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
-	}
-	if err := syncProjectRoute(routerConfig, spec); err != nil {
-		rollback()
-		return err
+	if err := syncProjectRouteWithSlipGateTLS(routerConfig, spec, slipGateTLSPlan, previousSlipGateTLSPlan); err != nil {
+		return fail(err)
 	}
 	if spec.Kind == ConfigSlipGate {
 		if err := m.installContainment(ctx, spec); err != nil {
-			rollback()
-			return err
+			return fail(err)
 		}
-		_ = m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
+		if err := m.enableSlipGateManagedServices(ctx, spec.ConfigPath); err != nil {
+			return fail(err)
+		}
+		if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false); err != nil {
+			return fail(err)
+		}
+		if err := m.restartSlipGateTLSBackends(ctx, slipGateTLSPlan); err != nil {
+			return fail(err)
+		}
+		for _, target := range slipGateTLSPublicPorts(slipGateTLSPlan) {
+			if err := openFirewall(ctx, m.Runner, target); err != nil {
+				return fail(fmt.Errorf("open public %d/%s: %w", target.port, target.protocol, err))
+			}
+		}
 	} else if err := m.Runner.Run(ctx, "systemctl", []string{"restart", spec.Service}, "/", false); err != nil {
-		rollback()
-		return err
+		return fail(err)
 	}
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
-		rollback()
-		return err
+		return fail(err)
+	}
+	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
+		return fail(fmt.Errorf("CottenRouter did not become active: %w", err))
+	}
+	if err := m.waitForRouterListeners(ctx, routerConfig); err != nil {
+		return fail(err)
+	}
+	if spec.Kind == ConfigSlipGate {
+		if err := m.waitForSlipGateTLSListeners(ctx, slipGateTLSPlan); err != nil {
+			return fail(err)
+		}
+	} else {
+		if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", spec.Service}, "/", false); err != nil {
+			return fail(fmt.Errorf("%s did not become active: %w", spec.Name, err))
+		}
+		request, plan, err := privateListenerExpectation(spec, spec.ConfigPath)
+		if err != nil {
+			return fail(err)
+		}
+		if err := m.waitForPrivateListeners(ctx, spec, request, plan); err != nil {
+			return fail(err)
+		}
+	}
+	if slipGateTLSTransaction != nil {
+		slipGateTLSTransaction.Commit()
 	}
 	return nil
 }
 
+func privateListenerExpectation(spec Spec, configPath string) (Request, PortPlan, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return Request{}, PortPlan{}, err
+	}
+	_, _, port := configSummary(spec, data)
+	if port == 0 {
+		return Request{}, PortPlan{}, fmt.Errorf("%s config has no private DNS port", spec.Name)
+	}
+	request := Request{ProjectID: spec.ID, PrivatePort: port}
+	plan := PortPlan{DNSPort: port}
+	if spec.ID == "cottendns" {
+		request.EnableTCP = strings.EqualFold(tomlValue(data, "TCP_LISTENER_ENABLED"), "true")
+		request.EnableDoT = strings.EqualFold(tomlValue(data, "DOT_LISTENER_ENABLED"), "true")
+		request.EnableDoH = strings.EqualFold(tomlValue(data, "DOH_LISTENER_ENABLED"), "true")
+		plan.DoTPrivatePort, _ = strconv.Atoi(tomlValue(data, "DOT_LISTEN_PORT"))
+		if strings.EqualFold(tomlValue(data, "DOH_COEXIST_MODE"), "behind") {
+			plan.DoHPrivatePort, _ = strconv.Atoi(tomlValue(data, "DOH_BEHIND_PORT"))
+		} else {
+			plan.DoHPrivatePort, _ = strconv.Atoi(tomlValue(data, "DOH_LISTEN_PORT"))
+		}
+		if request.EnableDoT && plan.DoTPrivatePort == 0 {
+			return Request{}, PortPlan{}, fmt.Errorf("CottenDNS has DoT enabled without a private port")
+		}
+		if request.EnableDoH && plan.DoHPrivatePort == 0 {
+			return Request{}, PortPlan{}, fmt.Errorf("CottenDNS has DoH enabled without a private port")
+		}
+	}
+	return request, plan, nil
+}
+
 func syncProjectRoute(path string, spec Spec) error {
+	return syncProjectRouteInternal(path, spec, nil, nil)
+}
+
+func syncProjectRouteWithSlipGateTLS(path string, spec Spec, current, previous SlipGateTLSPlan) error {
+	return syncProjectRouteInternal(path, spec, &current, &previous)
+}
+
+func syncProjectRouteInternal(path string, spec Spec, currentSlipGateTLS, previousSlipGateTLS *SlipGateTLSPlan) error {
 	routerData, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -446,6 +731,16 @@ func syncProjectRoute(path string, spec Spec) error {
 			}
 		}
 		cfg.Routes = append(kept, routes...)
+		if currentSlipGateTLS != nil {
+			previous := SlipGateTLSPlan{}
+			if previousSlipGateTLS != nil {
+				previous = *previousSlipGateTLS
+			}
+			cfg.TLSListeners, err = mergeSlipGateTLSListeners(cfg.TLSListeners, *currentSlipGateTLS, previous)
+			if err != nil {
+				return fmt.Errorf("merge SlipGate TLS routes: %w", err)
+			}
+		}
 	} else {
 		backendData, err := os.ReadFile(spec.ConfigPath)
 		if err != nil {
@@ -459,6 +754,9 @@ func syncProjectRoute(path string, spec Spec) error {
 			return fmt.Errorf("UDP_HOST must remain 127.0.0.1 so public traffic cannot bypass CottenRouter")
 		}
 		if spec.ID == "cottendns" {
+			if strings.EqualFold(tomlValue(backendData, "TCP_IPV6_ENABLED"), "true") && tomlValue(backendData, "TCP_IPV6_HOST") != "::1" {
+				return fmt.Errorf("TCP_IPV6_HOST must remain ::1 so plain DNS-over-TCP cannot bypass CottenRouter")
+			}
 			if strings.EqualFold(tomlValue(backendData, "DOT_LISTENER_ENABLED"), "true") && tomlValue(backendData, "DOT_LISTEN_HOST") != "127.0.0.1" {
 				return fmt.Errorf("DOT_LISTEN_HOST must remain 127.0.0.1 so DoT cannot bypass CottenRouter")
 			}
@@ -482,13 +780,110 @@ func syncProjectRoute(path string, spec Spec) error {
 		}
 		if !found {
 			cfg.Routes = append(cfg.Routes, config.Route{Name: spec.ID, Domains: domains, Backend: fmt.Sprintf("127.0.0.1:%d", port), TCPBackend: "disabled"})
+			found = true
+		}
+		if spec.ID == "cottendns" {
+			for i := range cfg.Routes {
+				if cfg.Routes[i].Name == spec.ID {
+					if strings.EqualFold(tomlValue(backendData, "TCP_LISTENER_ENABLED"), "true") {
+						cfg.Routes[i].TCPBackend = fmt.Sprintf("127.0.0.1:%d", port)
+					} else {
+						cfg.Routes[i].TCPBackend = "disabled"
+					}
+				}
+			}
+			var syncErr error
+			cfg.TLSListeners, syncErr = syncCottenEncryptedRoutes(cfg.TLSListeners, backendData, domains)
+			if syncErr != nil {
+				return syncErr
+			}
 		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	encoded, _ := json.MarshalIndent(cfg, "", "  ")
-	return atomicWrite(path, append(encoded, '\n'), 0644)
+	return atomicWrite(path, append(encoded, '\n'), 0640)
+}
+
+func syncCottenEncryptedRoutes(listeners []config.TLSListener, backendData []byte, domains []string) ([]config.TLSListener, error) {
+	containsDomain := func(value string) bool {
+		for _, domain := range domains {
+			if domain == value {
+				return true
+			}
+		}
+		return false
+	}
+	syncRoute := func(routeName, enabledKey, hostKey, portKey string, enabled bool) error {
+		if !enabled {
+			listeners = removeTLSRoute(listeners, routeName)
+			return nil
+		}
+		if tomlValue(backendData, hostKey) != "127.0.0.1" {
+			return fmt.Errorf("%s must remain 127.0.0.1", hostKey)
+		}
+		port, err := strconv.Atoi(tomlValue(backendData, portKey))
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("%s must contain a valid private port", portKey)
+		}
+		found := false
+		for i := range listeners {
+			for j := range listeners[i].Routes {
+				if listeners[i].Routes[j].Name != routeName {
+					continue
+				}
+				for _, serverName := range listeners[i].Routes[j].ServerNames {
+					if !containsDomain(serverName) {
+						return fmt.Errorf("%s SNI %q is missing from DOMAIN; use the common editor to change encrypted hostnames", routeName, serverName)
+					}
+				}
+				listeners[i].Routes[j].Backend = fmt.Sprintf("127.0.0.1:%d", port)
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s was enabled in native config; use the common editor once to choose its public hostname", enabledKey)
+		}
+		return nil
+	}
+	dotEnabled := strings.EqualFold(tomlValue(backendData, "DOT_LISTENER_ENABLED"), "true")
+	if err := syncRoute("cottendns-dot", "DOT_LISTENER_ENABLED", "DOT_LISTEN_HOST", "DOT_LISTEN_PORT", dotEnabled); err != nil {
+		return nil, err
+	}
+	dohEnabled := strings.EqualFold(tomlValue(backendData, "DOH_LISTENER_ENABLED"), "true")
+	if strings.EqualFold(tomlValue(backendData, "DOH_COEXIST_MODE"), "behind") {
+		dohEnabled = false
+	}
+	if dohEnabled && !strings.EqualFold(tomlValue(backendData, "DOH_TLS_ENABLED"), "true") {
+		return nil, fmt.Errorf("DOH_TLS_ENABLED must stay true while CottenRouter performs TLS passthrough")
+	}
+	if dohEnabled {
+		publicPort := 0
+		for _, listener := range listeners {
+			for _, route := range listener.Routes {
+				if route.Name != "cottendns-doh" {
+					continue
+				}
+				_, portText, err := net.SplitHostPort(listener.Listen)
+				if err != nil {
+					return nil, fmt.Errorf("CottenDNS DoH public listener %q: %w", listener.Listen, err)
+				}
+				publicPort, err = strconv.Atoi(portText)
+				if err != nil {
+					return nil, fmt.Errorf("CottenDNS DoH public listener has invalid port %q", portText)
+				}
+			}
+		}
+		privatePort, _ := strconv.Atoi(tomlValue(backendData, "DOH_LISTEN_PORT"))
+		if err := validateCottenRouterFrontDoHTLS(backendData, PortPlan{DoHPublicPort: publicPort, DoHPrivatePort: privatePort}); err != nil {
+			return nil, err
+		}
+	}
+	if err := syncRoute("cottendns-doh", "DOH_LISTENER_ENABLED", "DOH_LISTEN_HOST", "DOH_LISTEN_PORT", dohEnabled); err != nil {
+		return nil, err
+	}
+	return listeners, nil
 }
 
 func (m Manager) Service(ctx context.Context, projectID, action string) error {
@@ -523,6 +918,14 @@ func ensureServerHost(ctx context.Context, runner Runner) error {
 }
 
 func removeProjectConfig(path string, spec Spec) error {
+	return removeProjectConfigInternal(path, spec, nil)
+}
+
+func removeProjectConfigWithSlipGateTLS(path string, spec Spec, plan SlipGateTLSPlan) error {
+	return removeProjectConfigInternal(path, spec, &plan)
+}
+
+func removeProjectConfigInternal(path string, spec Spec, slipGateTLSPlan *SlipGateTLSPlan) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -538,6 +941,16 @@ func removeProjectConfig(path string, spec Spec) error {
 		}
 	}
 	cfg.Routes = routes
+	if spec.Kind == ConfigSlipGate {
+		previous := SlipGateTLSPlan{}
+		if slipGateTLSPlan != nil {
+			previous = *slipGateTLSPlan
+		}
+		cfg.TLSListeners, err = mergeSlipGateTLSListeners(cfg.TLSListeners, SlipGateTLSPlan{}, previous)
+		if err != nil {
+			return fmt.Errorf("remove SlipGate TLS routes: %w", err)
+		}
+	}
 	if spec.ID == "cottendns" {
 		cfg.TLSListeners = removeTLSRoute(removeTLSRoute(cfg.TLSListeners, "cottendns-dot"), "cottendns-doh")
 	}
@@ -548,5 +961,5 @@ func removeProjectConfig(path string, spec Spec) error {
 		return err
 	}
 	encoded, _ := json.MarshalIndent(cfg, "", "  ")
-	return atomicWrite(path, append(encoded, '\n'), 0644)
+	return atomicWrite(path, append(encoded, '\n'), 0640)
 }

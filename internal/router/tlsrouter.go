@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 var (
 	errBandwidthLimit = errors.New("CottenRouter bandwidth limit reached")
 	errNoServerName   = errors.New("TLS ClientHello has no SNI")
+	errNotTLS         = errors.New("stream does not start with a TLS ClientHello")
 )
 
 type tlsRouteEntry struct {
@@ -57,10 +59,10 @@ func (s *Server) ServeTLS(ctx context.Context, listener net.Listener, cfg config
 			}
 			return fmt.Errorf("accept TLS client on %s: %w", cfg.Name, err)
 		}
-		clientIP, ok := s.acquireTCPClient(client)
-		if !ok || !s.guard.AllowQuery(clientIP) {
+		clientIP, ok := s.acquireTLSHandshake(client)
+		if !ok || !s.guard.AllowTLSHandshake(clientIP) {
 			if ok {
-				s.releaseTCPClient(client, clientIP)
+				s.releaseTLSHandshake(client, clientIP)
 			} else {
 				_ = client.Close()
 			}
@@ -69,8 +71,7 @@ func (s *Server) ServeTLS(ctx context.Context, listener net.Listener, cfg config
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			defer s.releaseTCPClient(client, clientIP)
-			s.handleTLSClient(client, table, cfg.Name, cfg.DefaultBackend)
+			s.handleTLSClient(client, clientIP, table, cfg.Name, cfg.DefaultBackend, cfg.DefaultRouteName)
 		}()
 	}
 }
@@ -86,14 +87,25 @@ func makeTLSRouteTable(listener config.TLSListener) []tlsRouteEntry {
 	return entries
 }
 
-func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, listenerName, defaultBackend string) {
+func (s *Server) handleTLSClient(client net.Conn, clientIP netip.Addr, routes []tlsRouteEntry, listenerName, defaultBackend, defaultRouteName string) {
+	handshakeHeld := true
+	protocolHeld := ""
+	defer func() {
+		if handshakeHeld {
+			s.releaseTLSHandshake(client, clientIP)
+		} else if protocolHeld != "" {
+			s.releaseTLSProtocol(client, clientIP, protocolHeld)
+		} else {
+			s.untrackConnection(client)
+		}
+	}()
 	_ = client.SetReadDeadline(time.Now().Add(s.cfg.QueryTimeout()))
 	initial, serverName, err := readTLSClientHello(client, s.cfg.MaxTCPMessageSize)
-	if err != nil && !(errors.Is(err, errNoServerName) && defaultBackend != "") {
+	if err != nil && !((errors.Is(err, errNoServerName) || errors.Is(err, errNotTLS)) && defaultBackend != "") {
 		return
 	}
 	backendAddress := defaultBackend
-	routeName := "default"
+	routeName := defaultRouteName
 	for _, route := range routes {
 		if serverName == route.serverName || strings.HasSuffix(serverName, "."+route.serverName) {
 			backendAddress = route.backend
@@ -106,9 +118,18 @@ func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, listen
 		return
 	}
 	protocol := classifyTLSProtocol(listenerName, routeName)
+	// ClientHello parsing has a separate bounded pool. Once SNI identifies the
+	// stream, move it into a per-protocol pool so NaiveProxy/StunTLS/other
+	// long-lived sessions cannot consume DoH or DoT capacity.
+	s.releaseTLSHandshakeLease(clientIP)
+	handshakeHeld = false
+	if !s.acquireTLSProtocol(clientIP, protocol) {
+		s.stats.Drop(true)
+		return
+	}
+	protocolHeld = protocol
 	s.stats.SessionOpen(protocol, routeName)
 	defer s.stats.SessionClose(protocol, routeName)
-	s.stats.In(protocol, routeName, len(initial))
 	backend, err := net.DialTimeout("tcp", backendAddress, s.cfg.QueryTimeout())
 	if err != nil {
 		s.stats.Error(protocol, routeName)
@@ -116,20 +137,25 @@ func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, listen
 	}
 	defer backend.Close()
 	_ = backend.SetWriteDeadline(time.Now().Add(s.cfg.QueryTimeout()))
-	if !s.guard.AllowIngress(len(initial)) || writeAll(backend, initial) != nil {
+	if !s.guard.AllowSourceProtocolIngress(clientIP, protocol, len(initial)) {
 		s.stats.Drop(true)
 		return
 	}
+	if writeAll(backend, initial) != nil {
+		s.stats.Error(protocol, routeName)
+		return
+	}
+	s.stats.In(protocol, routeName, len(initial))
 	_ = client.SetDeadline(time.Time{})
 	_ = backend.SetDeadline(time.Time{})
 
 	errorsCh := make(chan error, 2)
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: client, allow: s.guard.AllowResponse, record: func(n int) { s.stats.Out(protocol, routeName, n) }}, backend, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: client, allow: func(n int) bool { return s.guard.AllowProtocolResponse(protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.Out(protocol, routeName, n) }}, backend, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: backend, allow: s.guard.AllowIngress, record: func(n int) { s.stats.In(protocol, routeName, n) }}, client, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: backend, allow: func(n int) bool { return s.guard.AllowSourceProtocolIngress(clientIP, protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.In(protocol, routeName, n) }}, client, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	<-errorsCh
@@ -139,13 +165,17 @@ func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, listen
 }
 
 type guardedWriter struct {
-	writer io.Writer
-	allow  func(int) bool
-	record func(int)
+	writer   io.Writer
+	allow    func(int) bool
+	rejected func()
+	record   func(int)
 }
 
 func (w *guardedWriter) Write(data []byte) (int, error) {
 	if !w.allow(len(data)) {
+		if w.rejected != nil {
+			w.rejected()
+		}
 		return 0, errBandwidthLimit
 	}
 	n, err := w.writer.Write(data)
@@ -179,7 +209,7 @@ func readTLSClientHello(reader io.Reader, maxSize int) ([]byte, string, error) {
 			return nil, "", err
 		}
 		if header[0] != 22 {
-			return nil, "", fmt.Errorf("first TLS record is not a handshake")
+			return append([]byte(nil), header[:]...), "", errNotTLS
 		}
 		recordSize := int(binary.BigEndian.Uint16(header[3:5]))
 		if recordSize < 1 || len(raw)+5+recordSize > maxSize {
@@ -247,7 +277,7 @@ func parseServerName(clientHello []byte) (string, error) {
 		}
 		offset += extensionSize
 	}
-	return "", fmt.Errorf("TLS ClientHello has no SNI")
+	return "", errNoServerName
 }
 
 func parseServerNameExtension(extension []byte) (string, error) {

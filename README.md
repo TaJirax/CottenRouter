@@ -9,8 +9,14 @@ private loopback port. CottenRouter extracts the first query name, selects the
 longest matching configured suffix, forwards the datagram, and returns the
 reply to the original client.
 
-The router allocates its own DNS transaction IDs per backend. This prevents two
-clients that chose the same 16-bit ID from receiving one another's responses.
+The router allocates its own DNS transaction IDs per connected backend socket
+and never reuses an ID within one socket generation; once all 65,536 IDs are
+issued it rotates to a new source port and retires the old socket. A reply is
+accepted only when it echoes the exact question that was sent under that ID, so
+a reply guessing the ID alone cannot consume or hijack a client's query. This
+prevents two clients that chose the same 16-bit ID from receiving one another's
+responses. It is transaction-ID and question matching on a connected socket,
+not cryptographic authentication: a backend itself is trusted.
 Pending queries are bounded and expired, malformed queries are dropped, and
 remote backends are rejected unless explicitly enabled. Fixed worker queues,
 global/per-source token buckets, connection caps, byte-rate budgets, deadlines,
@@ -39,8 +45,25 @@ curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/i
 sudo cottenrouter tui
 ```
 
-The bootstrap installs build dependencies only when missing, runs the test
-suite, creates at least 2 GiB of swap, and starts a safe DNS-only configuration.
+The bootstrap checks every required host tool, uses the exact Go toolchain
+declared by `go.mod` (with an official checksum-verified download when needed),
+runs the test suite, creates at least 2 GiB of swap, and starts a safe DNS-only
+configuration. Re-running it upgrades and explicitly restarts the active
+service.
+
+Remove only CottenRouter while preserving backend and panel data:
+
+```bash
+sudo cottenrouter-uninstall
+```
+
+Pass `--purge --confirm CottenRouter` to delete the router configuration too.
+Installer-owned swap is removed only with the separate, explicitly confirmed
+`--remove-swap` option. Port-53 firewall rules are removed only when the
+installer recorded that it added them; rules that already existed, and all
+upstream project data, are never deleted by the router uninstaller. The
+`cottenrouter` service account is deleted on `--purge` only when the installer's
+ownership marker shows it created that account.
 
 ## Build and test
 
@@ -86,10 +109,12 @@ Delegate every tunnel suffix to the same server IP. The suffix is the routing
 key, so each backend must have at least one unique domain. CottenRouter adds no
 DNS labels or protocol bytes and therefore does not reduce tunnel MTU.
 
-CottenDNS's DoT, DoH, ACME, metrics, compression, ARQ, MTU discovery, record
+CottenDNS's DoT, DoH, metrics, compression, ARQ, MTU discovery, record
 channels, and SOCKS/TCP forwarding remain inside CottenDNS. CottenRouter routes
 clear DNS-over-TCP on port 53 and can route DoT/DoH streams by SNI while
-preserving CottenDNS's TLS and HTTP handling end to end. The same passthrough
+preserving CottenDNS's configured TLS certificate and HTTP handling end to end.
+Router-front DoH is gated on a manual certificate/key until upstream exposes
+its external ACME port; alternate public ports cannot use ACME. The same passthrough
 supports SlipGate's TLS transports, including NaiveProxy and StunTLS. Likewise,
 thefeed's feed, extra, chat, media, signing, and relay queries are
 payload-transparent—list every feed/chat suffix on its route.

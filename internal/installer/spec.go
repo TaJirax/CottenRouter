@@ -29,7 +29,7 @@ func Specs() []Spec {
 		{ID: "cottendns", Name: "CottenDNS", Service: "cottendns", WorkDir: "/opt/cottenrouter/backends/cottendns", ConfigPath: "/opt/cottenrouter/backends/cottendns/server_config.toml", TemplatePath: "server_config.toml.simple", Kind: ConfigTOML, DefaultPort: 5301, SupportsTCP: true, SupportsDoT: true, SupportsDoH: true},
 		{ID: "masterdnsvpn", Name: "MasterDnsVPN", Service: "masterdnsvpn", WorkDir: "/opt/cottenrouter/backends/masterdnsvpn", ConfigPath: "/opt/cottenrouter/backends/masterdnsvpn/server_config.toml", TemplatePath: "server_config.toml.simple", Kind: ConfigTOML, DefaultPort: 5302},
 		{ID: "stormdns", Name: "StormDNS", Service: "stormdns", WorkDir: "/opt/cottenrouter/backends/stormdns", ConfigPath: "/opt/cottenrouter/backends/stormdns/server_config.toml", TemplatePath: "server_config.toml.simple", Kind: ConfigTOML, DefaultPort: 5303},
-		{ID: "thefeed", Name: "thefeed", Service: "thefeed-server", WorkDir: "/opt/thefeed", ConfigPath: "/opt/thefeed/.env", Kind: ConfigEnv, DefaultPort: 5304},
+		{ID: "thefeed", Name: "thefeed", Service: "thefeed-server", WorkDir: "/opt/thefeed", ConfigPath: "/opt/thefeed/data/thefeed.env", Kind: ConfigEnv, DefaultPort: 5304},
 		{ID: "slipgate", Name: "SlipGate", Service: "slipgate-dnsrouter", WorkDir: "/etc/slipgate", ConfigPath: "/etc/slipgate/config.json", Kind: ConfigSlipGate, DefaultPort: 5310},
 	}
 }
@@ -138,6 +138,7 @@ type PortPlan struct {
 
 func PlanPorts(occupied []Listener, request Request) PortPlan {
 	plan := PortPlan{DNSPort: request.PrivatePort, DoTPublicPort: 853, DoTPrivatePort: 8853, DoHPublicPort: 443, DoHPrivatePort: 8443, DoHMode: "router-front"}
+	doHPrivateStart := plan.DoHPrivatePort
 	ports := map[int][]Listener{}
 	for _, item := range occupied {
 		ports[item.Port] = append(ports[item.Port], item)
@@ -149,19 +150,29 @@ func PlanPorts(occupied []Listener, request Request) PortPlan {
 	}
 	ports[plan.DNSPort] = append(ports[plan.DNSPort], Listener{Port: plan.DNSPort, Process: "reserved for selected backend"})
 	if request.EnableDoH && len(ports[443]) > 0 {
-		plan.DoHMode = "behind-panel"
 		plan.Conflicts = append(plan.Conflicts, ports[443]...)
-		plan.Notes = append(plan.Notes, "Port 443 stays with the existing panel; forward the DoH hostname/path to the private DoH port in the panel.")
-		plan.DoHPrivatePort = firstFree(ports, 8453, 8499)
+		plan.DoHPublicPort = firstFree(ports, 8443, 8999)
+		plan.Notes = append(plan.Notes, fmt.Sprintf("Port 443 stays with the existing panel; DoH will use public TLS port %d.", plan.DoHPublicPort))
+	}
+	if request.EnableDoH && plan.DoHPublicPort > 0 {
+		ports[plan.DoHPublicPort] = append(ports[plan.DoHPublicPort], Listener{Port: plan.DoHPublicPort, Process: "reserved public DoH"})
 	}
 	if request.EnableDoT && len(ports[853]) > 0 {
 		plan.Conflicts = append(plan.Conflicts, ports[853]...)
-		plan.DoTPublicPort = firstFree(ports, 8853, 8899)
-		ports[plan.DoTPublicPort] = append(ports[plan.DoTPublicPort], Listener{Port: plan.DoTPublicPort, Process: "reserved public DoT"})
+		plan.DoTPublicPort = firstFree(ports, 8853, 8999)
 		plan.Notes = append(plan.Notes, fmt.Sprintf("Port 853 is protected; DoT will use public port %d unless its owner is reconfigured.", plan.DoTPublicPort))
 	}
+	if request.EnableDoT && plan.DoTPublicPort > 0 {
+		ports[plan.DoTPublicPort] = append(ports[plan.DoTPublicPort], Listener{Port: plan.DoTPublicPort, Process: "reserved public DoT"})
+	}
 	plan.DoTPrivatePort = firstFree(ports, 8853, 8999)
-	plan.DoHPrivatePort = firstFree(ports, plan.DoHPrivatePort, 8999)
+	if plan.DoTPrivatePort > 0 {
+		ports[plan.DoTPrivatePort] = append(ports[plan.DoTPrivatePort], Listener{Port: plan.DoTPrivatePort, Process: "reserved private DoT"})
+	}
+	plan.DoHPrivatePort = firstFree(ports, doHPrivateStart, 8999)
+	if plan.DoHPrivatePort > 0 {
+		ports[plan.DoHPrivatePort] = append(ports[plan.DoHPrivatePort], Listener{Port: plan.DoHPrivatePort, Process: "reserved private DoH"})
+	}
 	return plan
 }
 

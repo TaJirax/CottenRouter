@@ -28,12 +28,19 @@ suffixes are supported; the longest suffix wins.
 ## Feature boundaries
 
 - UDP DNS payloads are passed byte-for-byte except for the temporary DNS
-  transaction-ID mapping, which is restored on replies.
+  transaction-ID mapping, which is restored on replies. A reply consumes that
+  mapping only when its echoed question name, type, and class match the question
+  the router sent under that ID; otherwise it is dropped and the mapping stays
+  open for the genuine reply.
 - Clear DNS-over-TCP/53 uses standard RFC 1035 framing and can pipeline queries
   for different backends on one client connection.
-- CottenDNS DoT and DoH bind private loopback ports. Public `:853` and `:443`
-  TLS listeners route by SNI and pass encrypted bytes unchanged, preserving
-  CottenDNS certificates, ACME, HTTP paths, authentication, and coexist modes.
+- CottenDNS DoT and DoH bind private loopback ports. Public TLS listeners route
+  by SNI and pass encrypted bytes unchanged, preserving configured certificates,
+  HTTP paths, and authentication. CottenDNS's current ACME switch checks its
+  local DoH port for `:443`; that is false behind CottenRouter's private port.
+  Router-front DoH therefore requires `TLS_CERT_FILE`/`TLS_KEY_FILE` until an
+  upstream `ACME_EXTERNAL_PORT` setting is available. ACME is never claimed on
+  an alternate public port.
 - SlipGate NaiveProxy and StunTLS can use the same TLS passthrough. Give every
   SNI-routed service its own hostname and private loopback port. StunTLS has no
   domain field in SlipGate's native config, so its hostname is entered in the
