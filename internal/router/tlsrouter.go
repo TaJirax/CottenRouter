@@ -70,7 +70,7 @@ func (s *Server) ServeTLS(ctx context.Context, listener net.Listener, cfg config
 		go func() {
 			defer s.wg.Done()
 			defer s.releaseTCPClient(client, clientIP)
-			s.handleTLSClient(client, table, cfg.DefaultBackend)
+			s.handleTLSClient(client, table, cfg.Name, cfg.DefaultBackend)
 		}()
 	}
 }
@@ -86,29 +86,38 @@ func makeTLSRouteTable(listener config.TLSListener) []tlsRouteEntry {
 	return entries
 }
 
-func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, defaultBackend string) {
+func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, listenerName, defaultBackend string) {
 	_ = client.SetReadDeadline(time.Now().Add(s.cfg.QueryTimeout()))
 	initial, serverName, err := readTLSClientHello(client, s.cfg.MaxTCPMessageSize)
 	if err != nil && !(errors.Is(err, errNoServerName) && defaultBackend != "") {
 		return
 	}
 	backendAddress := defaultBackend
+	routeName := "default"
 	for _, route := range routes {
 		if serverName == route.serverName || strings.HasSuffix(serverName, "."+route.serverName) {
 			backendAddress = route.backend
+			routeName = route.name
 			break
 		}
 	}
 	if backendAddress == "" {
+		s.stats.Drop(false)
 		return
 	}
+	protocol := classifyTLSProtocol(listenerName, routeName)
+	s.stats.SessionOpen(protocol, routeName)
+	defer s.stats.SessionClose(protocol, routeName)
+	s.stats.In(protocol, routeName, len(initial))
 	backend, err := net.DialTimeout("tcp", backendAddress, s.cfg.QueryTimeout())
 	if err != nil {
+		s.stats.Error(protocol, routeName)
 		return
 	}
 	defer backend.Close()
 	_ = backend.SetWriteDeadline(time.Now().Add(s.cfg.QueryTimeout()))
 	if !s.guard.AllowIngress(len(initial)) || writeAll(backend, initial) != nil {
+		s.stats.Drop(true)
 		return
 	}
 	_ = client.SetDeadline(time.Time{})
@@ -116,11 +125,11 @@ func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, defaul
 
 	errorsCh := make(chan error, 2)
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: client, allow: s.guard.AllowResponse}, backend, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: client, allow: s.guard.AllowResponse, record: func(n int) { s.stats.Out(protocol, routeName, n) }}, backend, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: backend, allow: s.guard.AllowIngress}, client, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: backend, allow: s.guard.AllowIngress, record: func(n int) { s.stats.In(protocol, routeName, n) }}, client, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	<-errorsCh
@@ -132,13 +141,34 @@ func (s *Server) handleTLSClient(client net.Conn, routes []tlsRouteEntry, defaul
 type guardedWriter struct {
 	writer io.Writer
 	allow  func(int) bool
+	record func(int)
 }
 
 func (w *guardedWriter) Write(data []byte) (int, error) {
 	if !w.allow(len(data)) {
 		return 0, errBandwidthLimit
 	}
-	return w.writer.Write(data)
+	n, err := w.writer.Write(data)
+	if n > 0 && w.record != nil {
+		w.record(n)
+	}
+	return n, err
+}
+
+func classifyTLSProtocol(listener, route string) string {
+	value := strings.ToLower(listener + " " + route)
+	switch {
+	case strings.Contains(value, "doh"):
+		return "doh"
+	case strings.Contains(value, "dot"):
+		return "dot"
+	case strings.Contains(value, "naive"):
+		return "naiveproxy"
+	case strings.Contains(value, "stun"):
+		return "stuntls"
+	default:
+		return "tls/" + listener
+	}
 }
 
 func readTLSClientHello(reader io.Reader, maxSize int) ([]byte, string, error) {

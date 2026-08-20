@@ -14,6 +14,16 @@ func TestValidateDefaultsAndNormalizes(t *testing.T) {
 	if cfg.ListenUDP != "0.0.0.0:53" || cfg.Routes[0].Domains[0] != "vpn.example.com" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
+	if cfg.MaxPacketSize != 16*1024 || cfg.Limits.UDPQueue != 1024 || cfg.AdminListen != "127.0.0.1:9088" {
+		t.Fatalf("unsafe defaults: %+v", cfg)
+	}
+}
+
+func TestValidateRejectsRemoteAdminListener(t *testing.T) {
+	cfg := Config{AdminListen: "0.0.0.0:9088", Routes: []Route{{Name: "one", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:5301"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected loopback-only admin error")
+	}
 }
 
 func TestValidateRejectsRemoteBackend(t *testing.T) {

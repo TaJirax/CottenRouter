@@ -25,10 +25,22 @@ replaced.
 
 ## Current phase
 
-This repository contains the tested routing core and an online-refreshed
-catalog of upstream installer URLs/commands. It intentionally does not execute
-installers yet. The next phase will add the interactive Linux TUI and
-project-specific installation adapters after local routing tests pass.
+This repository includes the routing core, transactional project-specific
+installers, and a Bubble Tea server control deck. Installers resolve the latest
+upstream default branch at run time, retain each project's native advanced
+setup, move public listeners to private loopback ports, and atomically update
+the shared router configuration. Existing 3x-ui/x-ui/Hiddify port 443 listeners
+are protected.
+
+On a clean Linux server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh | sudo bash
+sudo cottenrouter tui
+```
+
+The bootstrap installs build dependencies only when missing, runs the test
+suite, creates at least 2 GiB of swap, and starts a safe DNS-only configuration.
 
 ## Build and test
 
@@ -51,9 +63,13 @@ sudo ./cottenrouter serve -config cottenrouter.json
 Use `./cottenrouter catalog` to resolve each repository's current default branch,
 verify its installer, and print the resulting latest command. `catalog
 --offline` displays bundled fallback metadata but is never intended for an
-installation. See
+installation. The router accepts bounded UDP datagrams up to 16 KiB while
+keeping its fixed queue small enough to preserve the memory budget. See
 [`docs/backend-integration.md`](docs/backend-integration.md) before installing
 multiple backends.
+
+See [`docs/installer.md`](docs/installer.md) for rollback, panel coexistence,
+resource isolation, and status API details.
 
 To use an existing SlipGate configuration either reference it with
 `slipgate_configs`, as shown in `cottenrouter.slipgate.example.json`, or generate

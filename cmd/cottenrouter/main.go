@@ -8,17 +8,23 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/TaJirax/CottenRouter/internal/catalog"
 	"github.com/TaJirax/CottenRouter/internal/config"
+	"github.com/TaJirax/CottenRouter/internal/installer"
 	"github.com/TaJirax/CottenRouter/internal/router"
+	"github.com/TaJirax/CottenRouter/internal/tui"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		if err := runTUI(nil); err != nil {
+			fmt.Fprintln(os.Stderr, "cottenrouter:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	var err error
 	switch os.Args[1] {
@@ -30,6 +36,10 @@ func main() {
 		err = printCatalog(os.Args[2:])
 	case "slipgate-import":
 		err = importSlipGate(os.Args[2:])
+	case "tui", "dashboard":
+		err = runTUI(os.Args[2:])
+	case "install":
+		err = installProject(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -153,6 +163,51 @@ func importSlipGate(args []string) error {
 	return file.Close()
 }
 
+func runTUI(args []string) error {
+	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
+	configPath := flags.String("config", "/etc/cottenrouter/config.json", "router configuration path")
+	admin := flags.String("admin", "127.0.0.1:9088", "local CottenRouter admin address")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if cfg, err := config.Load(*configPath); err == nil {
+		*admin = cfg.AdminListen
+	}
+	return tui.Run(*admin, *configPath)
+}
+
+func installProject(args []string) error {
+	flags := flag.NewFlagSet("install", flag.ContinueOnError)
+	project := flags.String("project", "", "project ID from the live catalog")
+	domain := flags.String("domain", "", "primary delegated DNS domain")
+	port := flags.String("port", "0", "private loopback DNS port")
+	extra := flags.String("extra-domains", "", "thefeed extra domains")
+	chat := flags.String("chat-domains", "", "thefeed chat domains")
+	tcpEnabled := flags.Bool("tcp", false, "enable backend DNS-over-TCP")
+	dotEnabled := flags.Bool("dot", false, "enable CottenDNS DoT")
+	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
+	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
+	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
+	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	privatePort, err := strconv.Atoi(*port)
+	if err != nil {
+		return fmt.Errorf("invalid --port: %w", err)
+	}
+	request := installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig}
+	plan, err := installer.DefaultManager().Install(context.Background(), request, func(message string) { fmt.Println("  •", message) })
+	if err != nil {
+		return err
+	}
+	for _, note := range plan.Notes {
+		fmt.Println("  !", note)
+	}
+	fmt.Println("Installation completed safely.")
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <serve|check|catalog|slipgate-import> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|check|catalog|slipgate-import> [options]")
 }

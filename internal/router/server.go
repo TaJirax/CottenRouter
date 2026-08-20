@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
@@ -15,17 +16,21 @@ import (
 	"github.com/TaJirax/CottenRouter/internal/config"
 	"github.com/TaJirax/CottenRouter/internal/dnswire"
 	"github.com/TaJirax/CottenRouter/internal/guard"
+	"github.com/TaJirax/CottenRouter/internal/telemetry"
 )
 
 type Server struct {
-	cfg          config.Config
-	routes       routeTable
-	logger       *slog.Logger
-	listener     *net.UDPConn
-	tcpListener  net.Listener
-	tlsListeners []net.Listener
-	done         chan struct{}
-	guard        *guard.Limiter
+	cfg           config.Config
+	routes        routeTable
+	logger        *slog.Logger
+	listener      *net.UDPConn
+	tcpListener   net.Listener
+	tlsListeners  []net.Listener
+	adminListener net.Listener
+	adminServer   *http.Server
+	done          chan struct{}
+	guard         *guard.Limiter
+	stats         *telemetry.Registry
 
 	mu              sync.Mutex
 	backends        map[string]*backendConn
@@ -51,6 +56,7 @@ type pendingQuery struct {
 	clientAddr *net.UDPAddr
 	clientID   uint16
 	expiresAt  time.Time
+	route      string
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -66,10 +72,21 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	server := &Server{
 		cfg: cfg, routes: table, logger: logger,
-		done: make(chan struct{}), guard: guard.New(cfg.Limits), backends: make(map[string]*backendConn),
+		done: make(chan struct{}), guard: guard.New(cfg.Limits), stats: telemetry.New(), backends: make(map[string]*backendConn),
 		tcpCapacity: make(chan struct{}, cfg.MaxTCPConnections), connections: make(map[net.Conn]struct{}),
 	}
 	server.packetPool.New = func() any { return make([]byte, cfg.MaxPacketSize) }
+	for _, route := range cfg.Routes {
+		server.stats.Ensure("dns/udp", route.Name)
+		if route.TCPBackend != "" && route.TCPBackend != "disabled" {
+			server.stats.Ensure("dns/tcp", route.Name)
+		}
+	}
+	for _, listener := range cfg.TLSListeners {
+		for _, route := range listener.Routes {
+			server.stats.Ensure(classifyTLSProtocol(listener.Name, route.Name), route.Name)
+		}
+	}
 	return server, nil
 }
 
@@ -85,13 +102,30 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.listenersMu.Lock()
 	s.listener = listener
 	s.listenersMu.Unlock()
-	streamErrors := make(chan error, 1+len(s.cfg.TLSListeners))
+	streamErrors := make(chan error, 2+len(s.cfg.TLSListeners))
 	streamCount := 0
 	openedTLS := make([]net.Listener, 0, len(s.cfg.TLSListeners))
+	adminListener, err := net.Listen("tcp", s.cfg.AdminListen)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("listen on admin %s: %w", s.cfg.AdminListen, err)
+	}
+	s.listenersMu.Lock()
+	s.adminListener = adminListener
+	s.listenersMu.Unlock()
+	streamCount++
+	go func() {
+		err := s.ServeAdmin(ctx, adminListener)
+		if err != nil {
+			s.Close()
+		}
+		streamErrors <- err
+	}()
 	if s.cfg.ListenTCP != "" {
 		tcpListener, err := net.Listen("tcp", s.cfg.ListenTCP)
 		if err != nil {
 			_ = listener.Close()
+			s.Close()
 			return fmt.Errorf("listen on TCP %s: %w", s.cfg.ListenTCP, err)
 		}
 		s.listenersMu.Lock()
@@ -189,6 +223,7 @@ func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
 		}
 		packet = packet[:n]
 		if !s.guard.AllowQuery(ipFromUDP(clientAddr)) {
+			s.stats.Drop(true)
 			s.packetPool.Put(packet[:cap(packet)])
 			continue
 		}
@@ -197,6 +232,7 @@ func (s *Server) Serve(ctx context.Context, listener *net.UDPConn) error {
 		default:
 			// Drop on overload. The queue and worker count are fixed, so an
 			// attacker cannot turn packets into unbounded goroutines or memory.
+			s.stats.Drop(false)
 			s.packetPool.Put(packet[:cap(packet)])
 		}
 	}
@@ -226,6 +262,15 @@ func (s *Server) Close() error {
 		}
 		for _, listener := range s.tlsListeners {
 			if err := listener.Close(); closeErr == nil {
+				closeErr = err
+			}
+		}
+		if s.adminServer != nil {
+			if err := s.adminServer.Close(); closeErr == nil {
+				closeErr = err
+			}
+		} else if s.adminListener != nil {
+			if err := s.adminListener.Close(); closeErr == nil {
 				closeErr = err
 			}
 		}
@@ -284,6 +329,8 @@ func (s *Server) ServeTCP(ctx context.Context, listener net.Listener) error {
 		go func() {
 			defer s.wg.Done()
 			defer s.releaseTCPClient(conn, clientIP)
+			s.stats.SessionOpen("dns/tcp", "")
+			defer s.stats.SessionClose("dns/tcp", "")
 			s.handleTCPConnection(conn)
 		}()
 	}
@@ -306,6 +353,7 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 			return
 		}
 		if !s.guard.AllowQuery(clientIP) {
+			s.stats.Drop(true)
 			return
 		}
 		inflight <- struct{}{}
@@ -330,6 +378,7 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 		}
 		return
 	}
+	s.stats.Query("dns/tcp", route.name, len(packet)+2)
 	if route.tcpBackend == "disabled" {
 		s.writeTCPMessage(client, writeMu, dnswire.ErrorResponse(packet, 2), s.cfg.QueryTimeout())
 		return
@@ -347,8 +396,10 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 	}
 	response, err := readTCPMessage(backend, s.cfg.MaxTCPMessageSize)
 	if err != nil {
+		s.stats.Error("dns/tcp", route.name)
 		return
 	}
+	s.stats.Out("dns/tcp", route.name, len(response)+2)
 	s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout())
 }
 
@@ -405,11 +456,13 @@ func writeAll(writer io.Writer, data []byte) error {
 func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
 	qname, err := dnswire.QuestionName(packet)
 	if err != nil {
+		s.stats.Drop(false)
 		s.logger.Debug("dropping malformed DNS query", "client", clientAddr, "error", err)
 		return
 	}
 	route, ok := s.routes.match(qname)
 	if !ok {
+		s.stats.Drop(false)
 		if s.cfg.UnmatchedAction == "refused" {
 			if response := dnswire.RefusedResponse(packet); response != nil {
 				s.writeUDPResponse(response, clientAddr)
@@ -417,6 +470,7 @@ func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
 		}
 		return
 	}
+	s.stats.Query("dns/udp", route.name, len(packet))
 	if response, verified := s.verificationResponse(packet, route); verified {
 		s.writeUDPResponse(response, clientAddr)
 		return
@@ -435,14 +489,18 @@ func (s *Server) handleQuery(packet []byte, clientAddr *net.UDPAddr) {
 		clientAddr: clientAddr,
 		clientID:   clientID,
 		expiresAt:  time.Now().Add(s.cfg.QueryTimeout()),
+		route:      route.name,
 	}, s.cfg.MaxPendingPerBackend)
 	if !ok {
+		s.stats.Drop(false)
 		s.logger.Warn("backend pending queue full", "route", route.name, "backend", route.backend)
 		return
 	}
+	s.stats.SessionOpen("dns/udp", route.name)
 	binary.BigEndian.PutUint16(packet[:2], serverID)
 	if _, err := backend.conn.Write(packet); err != nil {
 		backend.remove(serverID)
+		s.stats.SessionClose("dns/udp", route.name)
 		s.logger.Warn("forward query failed", "route", route.name, "backend", route.backend, "error", err)
 	}
 }
@@ -535,10 +593,13 @@ func (s *Server) readBackend(backend *backendConn) {
 		if !ok {
 			continue
 		}
+		s.stats.SessionClose("dns/udp", query.route)
 		binary.BigEndian.PutUint16(buffer[:2], query.clientID)
 		if !s.guard.AllowResponse(n) {
+			s.stats.Drop(true)
 			continue
 		}
+		s.stats.Out("dns/udp", query.route, n)
 		if _, err := s.listener.WriteToUDP(buffer[:n], query.clientAddr); err != nil && !errors.Is(err, net.ErrClosed) {
 			s.logger.Debug("client response write failed", "client", query.clientAddr, "error", err)
 		}
@@ -639,6 +700,7 @@ func (s *Server) expirePending(backend *backendConn) {
 			for id, query := range backend.pending {
 				if !now.Before(query.expiresAt) {
 					delete(backend.pending, id)
+					s.stats.SessionClose("dns/udp", query.route)
 				}
 			}
 			backend.mu.Unlock()

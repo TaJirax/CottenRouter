@@ -1,13 +1,20 @@
 {
   "listen_udp": "0.0.0.0:53",
   "listen_tcp": "0.0.0.0:53",
-	"admin_listen": "127.0.0.1:9088",
+  "admin_listen": "127.0.0.1:9088",
   "query_timeout_ms": 10000,
   "max_packet_size": 16384,
   "max_tcp_message_size": 65535,
   "max_pending_per_backend": 8192,
   "max_tcp_connections": 256,
   "unmatched_action": "drop",
-  "slipgate_configs": ["/etc/slipgate/config.json"],
-  "routes": []
+  "allow_remote_backends": false,
+  "routes": [
+    {
+      "name": "bootstrap-placeholder",
+      "domains": ["unconfigured.invalid"],
+      "backend": "127.0.0.1:5399",
+      "tcp_backend": "disabled"
+    }
+  ]
 }

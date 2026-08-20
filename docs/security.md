@@ -25,6 +25,12 @@ values with a systemd drop-in for larger deployments. The 2 GiB swap helper is
 an emergency cushion, not capacity: sustained overload is intentionally
 dropped before it can allocate unbounded memory.
 
+Installed backends are additionally attached to `cottenrouter-backends.slice`,
+which has aggregate CPU, memory, and task ceilings. Their DNS listeners are
+forced to loopback and their units depend on CottenRouter. CottenDNS also gets
+bounded TCP/DoH/encrypted connection, queue, session, stream, and cache values;
+thefeed keeps its native chat quotas and gains a finite account ceiling.
+
 ```bash
 sudo ./scripts/ensure-swap.sh
 sudo install -m 0644 packaging/cottenrouter.service /etc/systemd/system/

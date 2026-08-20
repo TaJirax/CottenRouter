@@ -1,15 +1,16 @@
 {
   "listen_udp": "0.0.0.0:53",
   "listen_tcp": "0.0.0.0:53",
+	"admin_listen": "127.0.0.1:9088",
   "query_timeout_ms": 10000,
-  "max_packet_size": 4096,
+  "max_packet_size": 16384,
 	"max_tcp_message_size": 65535,
   "max_pending_per_backend": 8192,
   "max_tcp_connections": 256,
   "unmatched_action": "drop",
 	"limits": {
 		"udp_workers": 32,
-		"udp_queue": 4096,
+		"udp_queue": 1024,
 		"global_queries_per_second": 20000,
 		"global_query_burst": 40000,
 		"per_ip_queries_per_second": 2000,

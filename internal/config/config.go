@@ -19,7 +19,7 @@ import (
 const (
 	defaultListen         = "0.0.0.0:53"
 	defaultTimeoutMS      = 10000
-	defaultPacketSize     = 4096
+	defaultPacketSize     = 16 * 1024
 	defaultTCPMessageSize = 65535
 	defaultMaxPending     = 8192
 	defaultMaxTCPConn     = 256
@@ -28,6 +28,7 @@ const (
 type Config struct {
 	ListenUDP            string        `json:"listen_udp"`
 	ListenTCP            string        `json:"listen_tcp,omitempty"`
+	AdminListen          string        `json:"admin_listen,omitempty"`
 	QueryTimeoutMS       int           `json:"query_timeout_ms"`
 	MaxPacketSize        int           `json:"max_packet_size"`
 	MaxTCPMessageSize    int           `json:"max_tcp_message_size"`
@@ -119,6 +120,9 @@ func (c *Config) applyDefaults() {
 	if c.ListenUDP == "" {
 		c.ListenUDP = defaultListen
 	}
+	if c.AdminListen == "" {
+		c.AdminListen = "127.0.0.1:9088"
+	}
 	if c.QueryTimeoutMS == 0 {
 		c.QueryTimeoutMS = defaultTimeoutMS
 	}
@@ -151,7 +155,7 @@ func (l *Limits) applyDefaults() {
 		}
 	}
 	if l.UDPQueue == 0 {
-		l.UDPQueue = 4096
+		l.UDPQueue = 1024
 	}
 	if l.GlobalQueriesPerSecond == 0 {
 		l.GlobalQueriesPerSecond = 20000
@@ -201,6 +205,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid listen_tcp %q: %w", c.ListenTCP, err)
 		}
 	}
+	admin, err := net.ResolveTCPAddr("tcp", c.AdminListen)
+	if err != nil {
+		return fmt.Errorf("invalid admin_listen %q: %w", c.AdminListen, err)
+	}
+	if admin.IP == nil || !admin.IP.IsLoopback() {
+		return fmt.Errorf("admin_listen must use a loopback address")
+	}
+	c.AdminListen = admin.String()
 	if c.QueryTimeoutMS < 100 || c.QueryTimeoutMS > int((10*time.Minute)/time.Millisecond) {
 		return fmt.Errorf("query_timeout_ms must be between 100 and 600000")
 	}
