@@ -86,7 +86,15 @@ for managed_dir in "${CONFIG_DIR}" "${LIB_DIR}" "${STATE_DIR}"; do
   fi
 done
 
-work_dir=$(mktemp -d /tmp/cottenrouter-install.XXXXXX)
+# Pick the tmp root with the most free space so the Go build has room.
+_tmp_free_tmp=$(df --output=avail /tmp 2>/dev/null | tail -1 || echo 0)
+_tmp_free_var=$(df --output=avail /var/tmp 2>/dev/null | tail -1 || echo 0)
+if (( _tmp_free_var > _tmp_free_tmp )); then
+  _tmpbase=/var/tmp
+else
+  _tmpbase=/tmp
+fi
+work_dir=$(mktemp -d "${_tmpbase}/cottenrouter-install.XXXXXX")
 backup_dir=${work_dir}/rollback
 mkdir -m 0700 "${backup_dir}"
 transaction_started=false
@@ -277,6 +285,15 @@ export CGO_ENABLED=0
 # With a pipe, Go falls back to direct VCS on any proxy/network error. A comma
 # only falls back for 404/410 responses, which is unsuitable on censored links.
 export GOPROXY='https://proxy.golang.org|direct'
+# Keep ALL Go build artifacts inside work_dir so they land on the same
+# filesystem as the downloaded source/toolchain. This avoids "no space left
+# on device" when /tmp is a small tmpfs but work_dir is on the main disk.
+export GOTMPDIR="${work_dir}/gotmp"
+export GOCACHE="${work_dir}/gocache"
+mkdir -p "${GOTMPDIR}" "${GOCACHE}"
+# Require at least 1 GB free on the build filesystem before starting.
+_build_avail=$(df --output=avail "${work_dir}" 2>/dev/null | tail -1 || echo 0)
+(( _build_avail >= 1048576 )) || fail "not enough disk space for Go build (need ≥ 1 GB free on $(df --output=target "${work_dir}" 2>/dev/null | tail -1))"
 (cd "${work_dir}/source" && "${go_binary}" test ./... && "${go_binary}" build -trimpath -ldflags='-s -w' -o "${work_dir}/cottenrouter" ./cmd/cottenrouter)
 
 [[ ! -L ${CONFIG_FILE} ]] || fail "refusing symlinked router configuration"
