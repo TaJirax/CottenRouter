@@ -40,6 +40,16 @@ func main() {
 		err = runTUI(os.Args[2:])
 	case "install":
 		err = installProject(os.Args[2:])
+	case "configure":
+		err = configureProject(os.Args[2:])
+	case "remove":
+		err = removeProject(os.Args[2:])
+	case "keys":
+		err = printKeys(os.Args[2:])
+	case "advanced":
+		err = advancedProject(os.Args[2:])
+	case "service":
+		err = manageService(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -49,6 +59,29 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cottenrouter:", err)
 		os.Exit(1)
 	}
+}
+
+func projectRequestFlags(name string, args []string) (installer.Request, error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	project := flags.String("project", "", "project ID")
+	domain := flags.String("domain", "", "primary delegated DNS domain")
+	port := flags.String("port", "0", "private loopback DNS port")
+	extra := flags.String("extra-domains", "", "thefeed extra domains")
+	chat := flags.String("chat-domains", "", "thefeed chat domains")
+	tcpEnabled := flags.Bool("tcp", false, "enable backend DNS-over-TCP")
+	dotEnabled := flags.Bool("dot", false, "enable CottenDNS DoT")
+	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
+	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
+	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
+	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
+	if err := flags.Parse(args); err != nil {
+		return installer.Request{}, err
+	}
+	privatePort, err := strconv.Atoi(*port)
+	if err != nil {
+		return installer.Request{}, fmt.Errorf("invalid --port: %w", err)
+	}
+	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig}, nil
 }
 
 func serve(args []string) error {
@@ -177,26 +210,10 @@ func runTUI(args []string) error {
 }
 
 func installProject(args []string) error {
-	flags := flag.NewFlagSet("install", flag.ContinueOnError)
-	project := flags.String("project", "", "project ID from the live catalog")
-	domain := flags.String("domain", "", "primary delegated DNS domain")
-	port := flags.String("port", "0", "private loopback DNS port")
-	extra := flags.String("extra-domains", "", "thefeed extra domains")
-	chat := flags.String("chat-domains", "", "thefeed chat domains")
-	tcpEnabled := flags.Bool("tcp", false, "enable backend DNS-over-TCP")
-	dotEnabled := flags.Bool("dot", false, "enable CottenDNS DoT")
-	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
-	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
-	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
-	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
-	if err := flags.Parse(args); err != nil {
+	request, err := projectRequestFlags("install", args)
+	if err != nil {
 		return err
 	}
-	privatePort, err := strconv.Atoi(*port)
-	if err != nil {
-		return fmt.Errorf("invalid --port: %w", err)
-	}
-	request := installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig}
 	plan, err := installer.DefaultManager().Install(context.Background(), request, func(message string) { fmt.Println("  •", message) })
 	if err != nil {
 		return err
@@ -208,6 +225,73 @@ func installProject(args []string) error {
 	return nil
 }
 
+func configureProject(args []string) error {
+	request, err := projectRequestFlags("configure", args)
+	if err != nil {
+		return err
+	}
+	plan, err := installer.DefaultManager().Configure(context.Background(), request, func(message string) { fmt.Println("  •", message) })
+	if err != nil {
+		return err
+	}
+	for _, note := range plan.Notes {
+		fmt.Println("  !", note)
+	}
+	return nil
+}
+
+func removeProject(args []string) error {
+	flags := flag.NewFlagSet("remove", flag.ContinueOnError)
+	project := flags.String("project", "", "project ID")
+	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
+	purge := flags.Bool("purge", false, "also permanently delete the project's managed directory")
+	confirm := flags.String("confirm", "", "required project ID confirmation when --purge is used")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *purge && *confirm != *project {
+		return fmt.Errorf("--purge requires --confirm %s", *project)
+	}
+	return installer.DefaultManager().Remove(context.Background(), *project, *routerConfig, *purge)
+}
+
+func printKeys(args []string) error {
+	flags := flag.NewFlagSet("keys", flag.ContinueOnError)
+	project := flags.String("project", "", "project ID")
+	reveal := flags.Bool("show-secrets", false, "print client secrets to the terminal")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	credentials, err := installer.Credentials(*project, *reveal)
+	if err != nil {
+		return err
+	}
+	for _, item := range credentials {
+		fmt.Printf("%s\n  source: %s\n  value: %s\n", item.Label, item.Path, item.Value)
+	}
+	return nil
+}
+
+func advancedProject(args []string) error {
+	flags := flag.NewFlagSet("advanced", flag.ContinueOnError)
+	project := flags.String("project", "", "project ID")
+	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return installer.DefaultManager().Advanced(context.Background(), *project, *routerConfig)
+}
+
+func manageService(args []string) error {
+	flags := flag.NewFlagSet("service", flag.ContinueOnError)
+	project := flags.String("project", "", "project ID")
+	action := flags.String("action", "restart", "start, stop, or restart")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return installer.DefaultManager().Service(context.Background(), *project, *action)
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|check|catalog|slipgate-import> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|keys|check|catalog|slipgate-import> [options]")
 }

@@ -69,7 +69,8 @@ keeping its fixed queue small enough to preserve the memory budget. See
 multiple backends.
 
 See [`docs/installer.md`](docs/installer.md) for rollback, panel coexistence,
-resource isolation, and status API details.
+resource isolation, project selection/editing/uninstall/key workflows, packet
+ceiling guidance, and status API details.
 
 To use an existing SlipGate configuration either reference it with
 `slipgate_configs`, as shown in `cottenrouter.slipgate.example.json`, or generate

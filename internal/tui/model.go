@@ -34,6 +34,7 @@ type statusMsg struct {
 	stats     telemetry.Snapshot
 	services  []serviceState
 	listeners []installer.Listener
+	projects  []installer.ProjectState
 	err       error
 }
 type serviceState struct{ name, state string }
@@ -49,11 +50,16 @@ type Model struct {
 	adminURL, routerConfig          string
 	width, height, tab, cursor      int
 	projects                        []installer.Spec
+	projectStates                   map[string]installer.ProjectState
+	selected                        map[int]bool
 	stats                           telemetry.Snapshot
 	services                        []serviceState
 	listeners                       []installer.Listener
 	err                             error
 	form                            bool
+	operation                       string
+	queue                           []int
+	confirm                         string
 	fields                          []field
 	fieldIndex                      int
 	enableTCP, enableDoT, enableDoH bool
@@ -67,7 +73,7 @@ func New(adminListen, routerConfig string) Model {
 	if routerConfig == "" {
 		routerConfig = "/etc/cottenrouter/config.json"
 	}
-	return Model{adminURL: "http://" + adminListen + "/v1/status", routerConfig: routerConfig, projects: installer.Specs(), enableTCP: true}
+	return Model{adminURL: "http://" + adminListen + "/v1/status", routerConfig: routerConfig, projects: installer.Specs(), projectStates: map[string]installer.ProjectState{}, selected: map[int]bool{}, enableTCP: true}
 }
 
 func Run(adminListen, routerConfig string) error {
@@ -109,6 +115,7 @@ func (m Model) refresh() tea.Cmd {
 		if output, err := exec.CommandContext(ctx, "ss", "-H", "-lntup").CombinedOutput(); err == nil {
 			msg.listeners = installer.ParseSS(string(output))
 		}
+		msg.projects, _ = installer.Discover(m.routerConfig)
 		return msg
 	}
 }
@@ -119,19 +126,43 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case statusMsg:
 		m.stats, m.services, m.listeners, m.err = msg.stats, msg.services, msg.listeners, msg.err
+		for _, state := range msg.projects {
+			m.projectStates[state.ID] = state
+		}
 	case tickMsg:
 		return m, tea.Batch(m.refresh(), tick())
 	case installDoneMsg:
 		m.form = false
 		if msg.err != nil {
-			m.notice = "Installation failed: " + msg.err.Error()
+			m.notice = strings.Title(m.operation) + " failed: " + msg.err.Error()
 		} else {
-			m.notice = "Installation completed and CottenRouter was restored."
+			m.notice = strings.Title(m.operation) + " completed safely."
+		}
+		if msg.err == nil && len(m.queue) > 0 {
+			m.cursor, m.queue = m.queue[0], m.queue[1:]
+			m.beginForm("install")
+			return m, nil
 		}
 		return m, m.refresh()
 	case tea.KeyMsg:
 		if m.form {
 			return m.updateForm(msg)
+		}
+		if m.confirm != "" {
+			if msg.String() == "esc" || msg.String() == "n" {
+				m.confirm, m.notice = "", "Cancelled."
+				return m, nil
+			}
+			if msg.String() == "y" {
+				action := m.confirm
+				m.confirm = ""
+				m.operation = action
+				if action == "reveal" {
+					return m, m.keysCmd(true)
+				}
+				return m, m.removeCmd(action == "purge")
+			}
+			return m, nil
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -148,9 +179,48 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tab == 1 && m.cursor < len(m.projects)-1 {
 				m.cursor++
 			}
-		case "enter":
+		case " ":
 			if m.tab == 1 {
-				m.beginForm()
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			}
+		case "enter", "e":
+			if m.tab == 1 {
+				operation := "install"
+				if m.projectStates[m.projects[m.cursor].ID].Installed {
+					operation = "configure"
+				}
+				m.beginForm(operation)
+			}
+		case "i":
+			if m.tab == 1 {
+				m.beginSelectedInstall()
+			}
+		case "u":
+			if m.tab == 1 {
+				m.confirm, m.notice = "detach", "Detach this project and keep its files? Press y/n."
+			}
+		case "x":
+			if m.tab == 1 {
+				m.confirm, m.notice = "purge", "PERMANENTLY delete this managed project directory? Press y/n."
+			}
+		case "v":
+			if m.tab == 1 {
+				m.operation = "keys"
+				return m, m.keysCmd(false)
+			}
+		case "V":
+			if m.tab == 1 {
+				m.confirm, m.notice = "reveal", "Reveal client secrets on screen? Press y/n."
+			}
+		case "a":
+			if m.tab == 1 {
+				m.operation = "advanced settings"
+				return m, m.projectCmd("advanced")
+			}
+		case "s":
+			if m.tab == 1 {
+				m.operation = "service restart"
+				return m, m.projectCmd("service", "--action", "restart")
 			}
 		case "r":
 			return m, m.refresh()
@@ -194,22 +264,64 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *Model) beginForm() {
+func (m *Model) beginForm(operation string) {
 	spec := m.projects[m.cursor]
-	m.form, m.fieldIndex, m.notice = true, 0, ""
+	m.form, m.fieldIndex, m.notice, m.operation = true, 0, "", operation
 	m.enableTCP, m.enableDoT, m.enableDoH = spec.SupportsTCP, false, false
 	m.fields = nil
-	if spec.Kind != installer.ConfigSlipGate {
-		m.fields = append(m.fields, newField("domain", "Tunnel domain", spec.ID+".example.com"))
+	state := m.projectStates[spec.ID]
+	if state.Installed {
+		m.enableTCP, m.enableDoT, m.enableDoH = state.EnableTCP, state.EnableDoT, state.EnableDoH
 	}
-	m.fields = append(m.fields, newField("port", "Private DNS port", strconv.Itoa(spec.DefaultPort)))
+	domain := spec.ID + ".example.com"
+	port := spec.DefaultPort
+	if state.Domain != "" {
+		domain = state.Domain
+	}
+	if state.PrivatePort != 0 {
+		port = state.PrivatePort
+	}
+	if spec.Kind != installer.ConfigSlipGate {
+		m.fields = append(m.fields, newField("domain", "Tunnel domain", domain))
+		m.fields = append(m.fields, newField("extra", "Additional DNS domains (comma separated)", state.ExtraDomains))
+	}
+	m.fields = append(m.fields, newField("port", "Private DNS port", strconv.Itoa(port)))
 	if spec.ID == "thefeed" {
-		m.fields = append(m.fields, newField("extra", "Extra domains (comma separated)", ""), newField("chat", "Chat domains (comma separated)", ""))
+		m.fields = append(m.fields, newField("chat", "Chat domains (comma separated)", state.ChatDomains))
 	}
 	if spec.SupportsDoT {
-		m.fields = append(m.fields, newField("dot", "DoT hostname", "dot.example.com"), newField("doh", "DoH hostname", "doh.example.com"))
+		dotDomain, dohDomain := state.DoTDomain, state.DoHDomain
+		if dotDomain == "" {
+			dotDomain = "dot.example.com"
+		}
+		if dohDomain == "" {
+			dohDomain = "doh.example.com"
+		}
+		m.fields = append(m.fields, newField("dot", "DoT hostname", dotDomain), newField("doh", "DoH hostname", dohDomain))
 	}
 	m.fields[0].input.Focus()
+}
+
+func (m *Model) beginSelectedInstall() {
+	m.queue = nil
+	hadSelection := false
+	for index := range m.projects {
+		if m.selected[index] {
+			hadSelection = true
+		}
+		if m.selected[index] && !m.projectStates[m.projects[index].ID].Installed {
+			m.queue = append(m.queue, index)
+		}
+	}
+	if hadSelection && len(m.queue) == 0 {
+		m.notice = "Every selected project is already installed; use enter/e to edit it."
+		return
+	}
+	if len(m.queue) == 0 {
+		m.queue = []int{m.cursor}
+	}
+	m.cursor, m.queue = m.queue[0], m.queue[1:]
+	m.beginForm("install")
 }
 
 func newField(key, label, value string) field {
@@ -231,7 +343,11 @@ func (m Model) installCmd() tea.Cmd {
 	if err != nil {
 		return func() tea.Msg { return installDoneMsg{err: err} }
 	}
-	args := []string{"install", "--project", spec.ID, "--domain", values["domain"], "--port", values["port"], "--router-config", m.routerConfig}
+	operation := m.operation
+	if operation == "" {
+		operation = "install"
+	}
+	args := []string{operation, "--project", spec.ID, "--domain", values["domain"], "--port", values["port"], "--router-config", m.routerConfig}
 	if values["extra"] != "" {
 		args = append(args, "--extra-domains", values["extra"])
 	}
@@ -249,6 +365,44 @@ func (m Model) installCmd() tea.Cmd {
 	}
 	command := exec.Command(executable, args...)
 	return tea.ExecProcess(command, func(err error) tea.Msg { return installDoneMsg{err: err} })
+}
+
+func (m Model) removeCmd(purge bool) tea.Cmd {
+	executable, err := os.Executable()
+	if err != nil {
+		return func() tea.Msg { return installDoneMsg{err: err} }
+	}
+	spec := m.projects[m.cursor]
+	args := []string{"remove", "--project", spec.ID, "--router-config", m.routerConfig}
+	if purge {
+		args = append(args, "--purge", "--confirm", spec.ID)
+	}
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
+}
+
+func (m Model) keysCmd(reveal bool) tea.Cmd {
+	executable, err := os.Executable()
+	if err != nil {
+		return func() tea.Msg { return installDoneMsg{err: err} }
+	}
+	args := []string{"keys", "--project", m.projects[m.cursor].ID}
+	if reveal {
+		args = append(args, "--show-secrets")
+	}
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
+}
+
+func (m Model) projectCmd(command string, extra ...string) tea.Cmd {
+	executable, err := os.Executable()
+	if err != nil {
+		return func() tea.Msg { return installDoneMsg{err: err} }
+	}
+	args := []string{command, "--project", m.projects[m.cursor].ID}
+	if command == "advanced" {
+		args = append(args, "--router-config", m.routerConfig)
+	}
+	args = append(args, extra...)
+	return tea.ExecProcess(exec.Command(executable, args...), func(err error) tea.Msg { return installDoneMsg{err: err} })
 }
 
 func (m Model) View() string {
@@ -281,7 +435,7 @@ func (m Model) View() string {
 			body = m.guideView(width - 4)
 		}
 	}
-	footer := lipgloss.NewStyle().Foreground(muted).Render("←/→ tabs  ↑/↓ select  enter open  r refresh  q quit")
+	footer := lipgloss.NewStyle().Foreground(muted).Render("←/→ tabs  ↑/↓ move  space select  enter manage  r refresh  q quit")
 	return lipgloss.NewStyle().Padding(1, 2).Render(header + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, rendered...) + "\n\n" + body + "\n" + footer)
 }
 
@@ -318,7 +472,7 @@ func (m Model) overview(width int) string {
 }
 
 func (m Model) installView(width int) string {
-	lines := []string{title.Render("INSTALL & INTEGRATE"), "Verified-current installers run one at a time with rollback and protected ports.", ""}
+	lines := []string{title.Render("PROJECT MANAGER"), "Select several fresh projects for guided installation, or manage one installed project.", ""}
 	for i, spec := range m.projects {
 		cursor := "  "
 		style := lipgloss.NewStyle()
@@ -326,22 +480,43 @@ func (m Model) installView(width int) string {
 			cursor = "▸ "
 			style = style.Bold(true).Foreground(cyan)
 		}
+		check := "[ ]"
+		if m.selected[i] {
+			check = "[x]"
+		}
+		state := m.projectStates[spec.ID]
+		status := "available"
+		if state.Installed {
+			status = "installed"
+		}
+		if state.Integrated {
+			status = "integrated"
+		}
 		caps := "DNS"
 		if spec.SupportsTCP {
 			caps += " · TCP · DoT · DoH"
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%-16s  private :%-5d  %s", cursor, spec.Name, spec.DefaultPort, caps)))
+		domain := state.Domain
+		if domain == "" {
+			domain = "-"
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s%s %-15s %-10s :%-5d %-25s %s", cursor, check, spec.Name, status, choosePort(state.PrivatePort, spec.DefaultPort), trim(domain, 25), caps)))
 	}
-	if m.notice != "" {
+	if m.notice != "" && m.confirm == "" {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(yellow).Render(m.notice))
 	}
-	lines = append(lines, "", lipgloss.NewStyle().Foreground(muted).Render("Enter configures the selected project. Upstream advanced prompts remain available during installation."))
+	if m.confirm != "" {
+		lines = append(lines, "", lipgloss.NewStyle().Bold(true).Foreground(red).Render(m.notice))
+	}
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(muted).Render("space select · i install selected · enter/e common settings · a advanced · s restart"))
+	lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("u detach · x purge · v key paths · V reveal keys"))
+	lines = append(lines, lipgloss.NewStyle().Foreground(muted).Render("Detach preserves data. Purge requires confirmation. Native advanced prompts remain available on first install."))
 	return panel.Width(width).Render(strings.Join(lines, "\n")) + "\n"
 }
 
 func (m Model) formView(width int) string {
 	spec := m.projects[m.cursor]
-	lines := []string{title.Render("CONFIGURE " + strings.ToUpper(spec.Name)), lipgloss.NewStyle().Foreground(muted).Render("The backend binds loopback only; CottenRouter owns public DNS ports."), ""}
+	lines := []string{title.Render(strings.ToUpper(m.operation) + " " + strings.ToUpper(spec.Name)), lipgloss.NewStyle().Foreground(muted).Render("The backend binds loopback only; CottenRouter owns public DNS ports."), ""}
 	for i, item := range m.fields {
 		label := lipgloss.NewStyle().Foreground(muted).Render(item.label)
 		if i == m.fieldIndex {
@@ -424,4 +599,11 @@ func onOff(value bool) string {
 		return "ON"
 	}
 	return "off"
+}
+
+func choosePort(current, fallback int) int {
+	if current != 0 {
+		return current
+	}
+	return fallback
 }

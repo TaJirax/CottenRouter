@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TaJirax/CottenRouter/internal/installer"
 	"github.com/TaJirax/CottenRouter/internal/telemetry"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -32,5 +33,19 @@ func TestInstallFormKeepsNativeProjectChoices(t *testing.T) {
 	got := updated.(Model)
 	if !got.form || len(got.fields) != 4 {
 		t.Fatalf("thefeed form fields = %d, open=%v", len(got.fields), got.form)
+	}
+}
+
+func TestProjectManagerSelectionAndInstalledState(t *testing.T) {
+	model := New("", "")
+	model.width, model.tab = 120, 1
+	model.projectStates["cottendns"] = installer.ProjectState{ID: "cottendns", Installed: true, Integrated: true, Domain: "dns.example", PrivatePort: 5301}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got := updated.(Model)
+	view := got.View()
+	for _, want := range []string{"[x]", "integrated", "dns.example", "advanced", "detach", "purge"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("project manager missing %q:\n%s", want, view)
+		}
 	}
 }

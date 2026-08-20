@@ -68,6 +68,13 @@ func (r *Request) Validate() (Spec, error) {
 			return Spec{}, fmt.Errorf("domain: %w", err)
 		}
 		r.Domain = domain
+		var normalizeErr error
+		if r.ExtraDomains, normalizeErr = normalizeDomainCSV(r.ExtraDomains); normalizeErr != nil {
+			return Spec{}, fmt.Errorf("extra domains: %w", normalizeErr)
+		}
+		if r.ChatDomains, normalizeErr = normalizeDomainCSV(r.ChatDomains); normalizeErr != nil {
+			return Spec{}, fmt.Errorf("chat domains: %w", normalizeErr)
+		}
 	}
 	if r.RouterConfig == "" {
 		r.RouterConfig = "/etc/cottenrouter/config.json"
@@ -96,6 +103,26 @@ func (r *Request) Validate() (Spec, error) {
 		r.DoHDomain = name
 	}
 	return spec, nil
+}
+
+func normalizeDomainCSV(value string) (string, error) {
+	var result []string
+	seen := map[string]bool{}
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		domain, err := dnswire.NormalizeDomain(item)
+		if err != nil {
+			return "", err
+		}
+		if !seen[domain] {
+			seen[domain] = true
+			result = append(result, domain)
+		}
+	}
+	return strings.Join(result, ","), nil
 }
 
 type Listener struct {

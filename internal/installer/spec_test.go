@@ -11,12 +11,12 @@ func TestPlanPortsProtectsPanel(t *testing.T) {
 }
 
 func TestRequestValidation(t *testing.T) {
-	r := Request{ProjectID: "masterdnsvpn", Domain: "VPN.Example.", EnableDoH: true}
+	r := Request{ProjectID: "masterdnsvpn", Domain: "VPN.Example.", ExtraDomains: " Extra.Example.,extra.example ", EnableDoH: true}
 	if _, err := r.Validate(); err == nil {
 		t.Fatal("expected unsupported DoH error")
 	}
 	r.EnableDoH = false
-	if _, err := r.Validate(); err != nil || r.Domain != "vpn.example" || r.PrivatePort != 5302 {
+	if _, err := r.Validate(); err != nil || r.Domain != "vpn.example" || r.ExtraDomains != "extra.example" || r.PrivatePort != 5302 {
 		t.Fatalf("validation failed: %v %+v", err, r)
 	}
 }

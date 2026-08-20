@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -94,18 +95,14 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 			return PortPlan{}, fmt.Errorf("port 53 is owned by %s; refusing to stop or replace it", listener.Process)
 		}
 	}
-	for _, panelService := range []string{"x-ui", "3x-ui", "hiddify-panel"} {
-		if output, err := m.Runner.Output(ctx, "systemctl", "is-active", panelService); err == nil && strings.TrimSpace(string(output)) == "active" {
-			listeners = append(listeners, Listener{Port: 443, Protocol: "tcp", Process: panelService + " (protected panel)", Address: "0.0.0.0:443"})
-		}
-	}
+	listeners = m.protectPanels(ctx, listeners)
 	var externalListeners []Listener
 	managedActive := false
 	if output, err := m.Runner.Output(ctx, "systemctl", "is-active", spec.Service); err == nil && strings.TrimSpace(string(output)) == "active" {
 		managedActive = true
 	}
 	for _, listener := range listeners {
-		if !strings.Contains(strings.ToLower(listener.Process), "cottenrouter") && !(managedActive && listener.Port == request.PrivatePort) {
+		if !strings.Contains(strings.ToLower(listener.Process), "cottenrouter") && !(managedActive && listenerOwnedBySpec(listener, spec)) {
 			externalListeners = append(externalListeners, listener)
 		}
 	}
@@ -197,7 +194,7 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	}
 	if spec.Kind == ConfigSlipGate {
 		progress("Opening SlipGate's native setup so every selected transport setting remains available")
-		if err := m.Runner.Run(ctx, "slipgate", nil, spec.WorkDir, true); err != nil {
+		if err := m.runProtectedSlipGate(ctx, spec.WorkDir); err != nil {
 			return plan, fmt.Errorf("SlipGate setup: %w", err)
 		}
 	}
@@ -238,6 +235,73 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	return plan, nil
 }
 
+func (m Manager) runProtectedSlipGate(ctx context.Context, workDir string) error {
+	shimDir, err := os.MkdirTemp("", "cottenrouter-slipgate-guard-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(shimDir)
+	realFuser, _ := exec.LookPath("fuser")
+	if realFuser == "" {
+		realFuser = "/bin/false"
+	}
+	protected := []string{"53/udp", "53/tcp", "443/tcp", "853/tcp"}
+	if listeners, scanErr := m.Scan(ctx); scanErr == nil {
+		for _, listener := range listeners {
+			protocol := strings.TrimSuffix(strings.ToLower(listener.Protocol), "6")
+			if protocol == "tcp" || protocol == "udp" {
+				protected = append(protected, fmt.Sprintf("%d/%s", listener.Port, protocol))
+			}
+		}
+	}
+	shim := protectedFuserScript(realFuser, protected)
+	if err := os.WriteFile(filepath.Join(shimDir, "fuser"), []byte(shim), 0755); err != nil {
+		return err
+	}
+	protectedPath := shimDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	return m.Runner.Run(ctx, "env", []string{"PATH=" + protectedPath, "slipgate"}, workDir, true)
+}
+
+func protectedFuserScript(realFuser string, protected []string) string {
+	seen := map[string]bool{}
+	patterns := make([]string, 0, len(protected))
+	for _, value := range protected {
+		if regexp.MustCompile(`^[0-9]+/(tcp|udp)$`).MatchString(value) && !seen[value] {
+			seen[value] = true
+			patterns = append(patterns, `*" `+value+` "*`)
+		}
+	}
+	sort.Strings(patterns)
+	return "#!/bin/sh\ncase \" $* \" in " + strings.Join(patterns, "|") + ") exit 1 ;; esac\nexec " + strconv.Quote(realFuser) + " \"$@\"\n"
+}
+
+func listenerOwnedBySpec(listener Listener, spec Spec) bool {
+	process := strings.ToLower(listener.Process)
+	for _, candidate := range []string{spec.ID, spec.Service, strings.ToLower(spec.Name)} {
+		if candidate != "" && strings.Contains(process, strings.ToLower(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Manager) protectPanels(ctx context.Context, listeners []Listener) []Listener {
+	for _, panelService := range []string{"x-ui", "3x-ui", "hiddify-panel", "marzban", "xray"} {
+		if output, err := m.Runner.Output(ctx, "systemctl", "is-active", panelService); err == nil && strings.TrimSpace(string(output)) == "active" {
+			already := false
+			for _, listener := range listeners {
+				if listener.Port == 443 && strings.Contains(strings.ToLower(listener.Process), strings.ToLower(panelService)) {
+					already = true
+				}
+			}
+			if !already {
+				listeners = append(listeners, Listener{Port: 443, Protocol: "tcp", Process: panelService + " (protected panel)", Address: "0.0.0.0:443"})
+			}
+		}
+	}
+	return listeners
+}
+
 // installContainment makes CottenRouter the lifecycle parent of managed
 // backends and places them in one bounded slice. A backend failure cannot take
 // the public router down, while a router restart pauses public-facing work
@@ -259,6 +323,9 @@ TasksMax=4096
 	}
 	services := []string{spec.Service}
 	if spec.Kind == ConfigSlipGate {
+		if err := forceSlipGateLoopback(spec.ConfigPath); err != nil {
+			return err
+		}
 		services = nil
 		output, _ := m.Runner.Output(ctx, "systemctl", "list-unit-files", "--no-legend", "slipgate-*.service")
 		for _, line := range strings.Split(string(output), "\n") {
@@ -299,6 +366,64 @@ TasksMax=2048
 	return m.Runner.Run(ctx, "systemctl", []string{"daemon-reload"}, "/", false)
 }
 
+func forceSlipGateLoopback(configPath string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var document struct {
+		Tunnels []struct {
+			Tag, Transport string
+			Port           int  `json:"port"`
+			Enabled        bool `json:"enabled"`
+		} `json:"tunnels"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	for _, tunnel := range document.Tunnels {
+		if !tunnel.Enabled || tunnel.Port == 0 || !slipGateDNSTransport(tunnel.Transport) {
+			continue
+		}
+		if !safeServiceName("slipgate-" + tunnel.Tag) {
+			return fmt.Errorf("unsafe SlipGate tag %q", tunnel.Tag)
+		}
+		path := filepath.Join("/etc/systemd/system", "slipgate-"+tunnel.Tag+".service")
+		unit, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		patched, changed := privateSlipGateUnit(unit, tunnel.Port)
+		if bytes.Equal(unit, patched) && tunnel.Transport != "slipstream" {
+			return fmt.Errorf("SlipGate unit %s does not expose an expected listen address", path)
+		}
+		if changed {
+			if err := atomicWrite(path, patched, 0644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func privateSlipGateUnit(unit []byte, port int) ([]byte, bool) {
+	public := []byte(fmt.Sprintf("0.0.0.0:%d", port))
+	private := []byte(fmt.Sprintf("127.0.0.1:%d", port))
+	patched := bytes.ReplaceAll(unit, public, private)
+	return patched, !bytes.Equal(unit, patched)
+}
+
+func slipGateDNSTransport(value string) bool {
+	switch value {
+	case "dnstt", "slipstream", "vaydns":
+		return true
+	}
+	return false
+}
+
 func safeServiceName(name string) bool {
 	return regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`).MatchString(name)
 }
@@ -334,7 +459,12 @@ func (m Manager) download(ctx context.Context, url string) ([]byte, error) {
 func configure(spec Spec, request Request, plan PortPlan, data []byte) ([]byte, error) {
 	switch spec.Kind {
 	case ConfigTOML:
-		data = setTOML(data, "DOMAIN", "[\""+request.Domain+"\"]")
+		domains := appendCSV([]string{request.Domain}, request.ExtraDomains, request.DoTDomain, request.DoHDomain)
+		quoted := make([]string, 0, len(domains))
+		for _, domain := range domains {
+			quoted = append(quoted, strconv.Quote(domain))
+		}
+		data = setTOML(data, "DOMAIN", "["+strings.Join(quoted, ", ")+"]")
 		data = setTOML(data, "UDP_HOST", "\"127.0.0.1\"")
 		data = setTOML(data, "UDP_PORT", strconv.Itoa(request.PrivatePort))
 		if spec.ID == "cottendns" {
@@ -444,9 +574,9 @@ func updateRouterConfig(path string, spec Spec, request Request, plan PortPlan) 
 			cfg.Routes = upsertRoute(cfg.Routes, route)
 		}
 	} else {
-		domains := []string{request.Domain}
+		domains := appendCSV([]string{request.Domain}, request.ExtraDomains)
 		if spec.Kind == ConfigEnv {
-			domains = appendCSV(domains, request.ExtraDomains, request.ChatDomains)
+			domains = appendCSV(domains, request.ChatDomains)
 		}
 		tcpBackend := "disabled"
 		if request.EnableTCP {
