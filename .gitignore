@@ -1,0 +1,6 @@
+/bin/
+/.cache/
+/cottendns-router
+/cottenrouter
+cottenrouter.json
+*.log

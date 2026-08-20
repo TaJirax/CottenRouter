@@ -1,0 +1,11 @@
+{
+  "listen_udp": "0.0.0.0:53",
+  "listen_tcp": "0.0.0.0:53",
+  "query_timeout_ms": 10000,
+  "max_packet_size": 65535,
+  "max_pending_per_backend": 8192,
+  "max_tcp_connections": 1024,
+  "unmatched_action": "drop",
+  "slipgate_configs": ["/etc/slipgate/config.json"],
+  "routes": []
+}
