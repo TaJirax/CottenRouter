@@ -244,6 +244,13 @@ else
   go_url="https://go.dev/dl/go${required_go}.linux-${go_arch}.tar.gz"
   printf 'Downloading Go %s for %s...\n' "${required_go}" "${go_arch}"
   expected_sha=$(curl -fsSL --retry 3 "${go_url}.sha256" | awk 'NR == 1 { print $1 }')
+  if [[ ! ${expected_sha} =~ ^[a-fA-F0-9]{64}$ ]]; then
+    # Sidecar .sha256 URL failed (common for newer Go releases); fall back to the JSON download index.
+    expected_sha=$(curl -fsSL --retry 3 "https://go.dev/dl/?mode=json&include=all" \
+      | sed 's/},{/}\n{/g' \
+      | awk -F'"' -v fn="go${required_go}.linux-${go_arch}.tar.gz" \
+          '$0 ~ fn { for(i=1;i<=NF;i++) if($i=="sha256") { print $(i+2); exit } }')
+  fi
   [[ ${expected_sha} =~ ^[a-fA-F0-9]{64}$ ]] || fail "could not obtain the official Go checksum"
   curl -fsSL --retry 3 "${go_url}" -o "${go_archive}"
   printf '%s  %s\n' "${expected_sha}" "${go_archive}" | sha256sum -c -
