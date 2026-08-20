@@ -1,0 +1,35 @@
+services:
+  cottenrouter:
+    image: ghcr.io/tajirax/cottenrouter:latest
+    # Or build locally:  docker compose build
+    build:
+      context: .
+      args:
+        VERSION: dev
+    restart: unless-stopped
+    # Host 53 is privileged; the container port is not. Docker's userland proxy
+    # binds 53 on the host, and the router itself never runs as root.
+    ports:
+      - "53:5353/udp"
+      - "53:5353/tcp"
+    volumes:
+      - ./cottenrouter.docker.json:/etc/cottenrouter/config.json:ro
+    networks:
+      - backends
+    # The router needs no privileges at all in this layout.
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # A DNS front end is exposed to the Internet; keep it from eating the host.
+    mem_limit: 1g
+    pids_limit: 4096
+
+# Backends attach here and publish nothing to the host. Only the router is
+# reachable from outside, which is the whole point of the layout.
+networks:
+  backends:
+    driver: bridge
+    internal: false

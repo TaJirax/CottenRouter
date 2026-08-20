@@ -27,3 +27,32 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
       - run: go build ./cmd/cottenrouter
       - run: bash -n scripts/*.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t cottenrouter:ci --build-arg VERSION=ci .
+      - name: Image runs as a non-root user
+        run: |
+          user=$(docker inspect -f '{{.Config.User}}' cottenrouter:ci)
+          echo "image user: ${user}"
+          case "${user}" in
+            root|0|0:0|"") echo "image must not run as root"; exit 1 ;;
+          esac
+      - name: Shipped config validates
+        run: docker run --rm cottenrouter:ci check -config /etc/cottenrouter/config.json
+      - name: Server starts and answers its health probe
+        run: |
+          docker run -d --name ctr -p 15353:5353/udp -p 15353:5353/tcp cottenrouter:ci
+          for attempt in $(seq 1 20); do
+            if docker exec ctr /usr/local/bin/cottenrouter healthz \
+                 -config /etc/cottenrouter/config.json; then
+              echo "healthy after ${attempt} attempt(s)"
+              docker rm -f ctr >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container never became healthy"; docker logs ctr; docker rm -f ctr; exit 1

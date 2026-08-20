@@ -1,0 +1,20 @@
+{
+  "listen_udp": "0.0.0.0:5353",
+  "listen_tcp": "0.0.0.0:5353",
+  "admin_listen": "127.0.0.1:9088",
+  "query_timeout_ms": 10000,
+  "max_packet_size": 16384,
+  "max_tcp_message_size": 16384,
+  "max_pending_per_backend": 8192,
+  "max_tcp_connections": 256,
+  "unmatched_action": "drop",
+  "allow_remote_backends": true,
+  "routes": [
+    {
+      "name": "bootstrap-placeholder",
+      "domains": ["unconfigured.invalid"],
+      "backend": "127.0.0.1:5399",
+      "tcp_backend": "disabled"
+    }
+  ]
+}

@@ -4,6 +4,7 @@
 /.cache/
 /cottendns-router
 /cottenrouter
+/cottenrouter.exe
 cottenrouter-*-*
 
 # Local runtime config (the committed examples are the templates)

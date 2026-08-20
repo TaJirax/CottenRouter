@@ -1,0 +1,14 @@
+.git
+.github
+.cache
+bin
+dist
+docs
+*.md
+!README.md
+*.log
+*.test
+*.test.exe
+*.prof
+cottenrouter
+cottenrouter.json

@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/TaJirax/CottenRouter/internal/catalog"
 	"github.com/TaJirax/CottenRouter/internal/config"
@@ -53,6 +55,8 @@ func main() {
 		err = advancedProject(os.Args[2:])
 	case "service":
 		err = manageService(os.Args[2:])
+	case "healthz":
+		err = healthz(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println("cottenrouter", version)
 	case "help", "-h", "--help":
@@ -112,6 +116,37 @@ func serve(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return server.ListenAndServe(ctx)
+}
+
+// healthz probes the loopback admin API using the same configuration the server
+// was started with. The container image carries no shell or HTTP client, so the
+// binary is its own Docker HEALTHCHECK.
+func healthz(args []string) error {
+	flags := flag.NewFlagSet("healthz", flag.ContinueOnError)
+	configPath := flags.String("config", "cottenrouter.json", "path to JSON configuration")
+	timeout := flags.Duration("timeout", 2*time.Second, "probe timeout")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+cfg.AdminListen+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("admin health check returned %s", response.Status)
+	}
+	return nil
 }
 
 func check(args []string) error {
@@ -301,5 +336,5 @@ func manageService(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|uninstall|keys|check|catalog|slipgate-import|version> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|uninstall|keys|check|catalog|slipgate-import|healthz|version> [options]")
 }
