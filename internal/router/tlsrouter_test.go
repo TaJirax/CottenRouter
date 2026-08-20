@@ -9,10 +9,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,5 +122,98 @@ func TestTLSRouterPreservesTLSAndRoutesBySNI(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEncryptedProtocolsRemainIsolatedConcurrently(t *testing.T) {
+	certificate := testCertificate(t)
+	type target struct {
+		name, host string
+		marker     byte
+		backend    net.Listener
+		close      func()
+	}
+	targets := []target{
+		{name: "cottendns-doh", host: "doh.compat.test", marker: 0xd1},
+		{name: "slipgate-naive", host: "naive.compat.test", marker: 0xd2},
+		{name: "slipgate-stuntls", host: "stun.compat.test", marker: 0xd3},
+		{name: "cottendns-dot", host: "dot.compat.test", marker: 0xd4},
+	}
+	for i := range targets {
+		targets[i].backend, targets[i].close = fakeTLSBackend(t, certificate, targets[i].marker)
+		defer targets[i].close()
+	}
+	httpsFrontend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dotFrontend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listeners := []config.TLSListener{
+		{Name: "https", Listen: httpsFrontend.Addr().String(), Routes: []config.TLSRoute{
+			{Name: targets[0].name, ServerNames: []string{targets[0].host}, Backend: targets[0].backend.Addr().String()},
+			{Name: targets[1].name, ServerNames: []string{targets[1].host}, Backend: targets[1].backend.Addr().String()},
+			{Name: targets[2].name, ServerNames: []string{targets[2].host}, Backend: targets[2].backend.Addr().String()},
+		}},
+		{Name: "dot", Listen: dotFrontend.Addr().String(), Routes: []config.TLSRoute{
+			{Name: targets[3].name, ServerNames: []string{targets[3].host}, Backend: targets[3].backend.Addr().String()},
+		}},
+	}
+	cfg := config.Config{TLSListeners: listeners, MaxTCPConnections: 256}
+	cfg.Limits.MaxTCPConnectionsPerIP = 256
+	server, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	go func() { done <- server.ServeTLS(ctx, httpsFrontend, listeners[0]) }()
+	go func() { done <- server.ServeTLS(ctx, dotFrontend, listeners[1]) }()
+
+	const sessionsPerProtocol = 30
+	var clients sync.WaitGroup
+	errors := make(chan error, len(targets)*sessionsPerProtocol)
+	for index, item := range targets {
+		address := httpsFrontend.Addr().String()
+		if index == 3 {
+			address = dotFrontend.Addr().String()
+		}
+		for n := 0; n < sessionsPerProtocol; n++ {
+			item, address := item, address
+			clients.Add(1)
+			go func() {
+				defer clients.Done()
+				client, err := tls.Dial("tcp", address, &tls.Config{ServerName: item.host, InsecureSkipVerify: true}) // test certificate
+				if err != nil {
+					errors <- err
+					return
+				}
+				defer client.Close()
+				_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+				if _, err := client.Write([]byte{1}); err != nil {
+					errors <- err
+					return
+				}
+				var response [1]byte
+				if _, err := io.ReadFull(client, response[:]); err != nil || response[0] != item.marker {
+					errors <- fmt.Errorf("%s crossed route: marker=%x err=%v", item.name, response[0], err)
+				}
+			}()
+		}
+	}
+	clients.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancel()
+	for range listeners {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
