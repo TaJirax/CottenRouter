@@ -1,0 +1,14 @@
+# Official Go toolchain SHA-256 checksums for Linux archives.
+# Source: https://go.dev/dl/?mode=json&include=all
+# Format: <sha256>  go<version>.linux-<arch>.tar.gz
+#
+# When go.dev is unreachable the installer reads this file directly from the
+# raw GitHub URL, so it never needs to contact go.dev at all.
+
+# Go 1.25.0
+2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613  go1.25.0.linux-amd64.tar.gz
+05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae  go1.25.0.linux-arm64.tar.gz
+a5a8f8198fcf00e1e485b8ecef9ee020778bf32a408a4e8873371bfce458cd09  go1.25.0.linux-armv6l.tar.gz
+0f18a89e7576cf2c5fa0b487a1635d9bcbf843df5f110e9982c64df52a983ad0  go1.25.0.linux-ppc64le.tar.gz
+c018ff74a2c48d55c8ca9b07c8e24163558ffec8bea08b326d6336905d956b67  go1.25.0.linux-riscv64.tar.gz
+34e5a2e19f2292fbaf8783e3a241e6e49689276aef6510a8060ea5ef54eee408  go1.25.0.linux-s390x.tar.gz

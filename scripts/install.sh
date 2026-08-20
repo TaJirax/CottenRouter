@@ -243,13 +243,25 @@ else
   go_archive="${work_dir}/go${required_go}.linux-${go_arch}.tar.gz"
   go_url="https://go.dev/dl/go${required_go}.linux-${go_arch}.tar.gz"
   printf 'Downloading Go %s for %s...\n' "${required_go}" "${go_arch}"
-  expected_sha=$(curl -fsSL --retry 3 "${go_url}.sha256" | awk 'NR == 1 { print $1 }')
+  go_tarball="go${required_go}.linux-${go_arch}.tar.gz"
+  expected_sha=""
+  # Level 1: go.dev .sha256 sidecar (plain-text, fast).
+  _raw=$(curl -fsSL --retry 3 "${go_url}.sha256" 2>/dev/null || true)
+  if [[ ${_raw} =~ ^[a-fA-F0-9]{64} ]]; then
+    expected_sha=$(printf '%s' "${_raw}" | awk 'NR==1{print $1}')
+  fi
+  # Level 2: go.dev JSON download index (works when sidecar redirects to HTML).
   if [[ ! ${expected_sha} =~ ^[a-fA-F0-9]{64}$ ]]; then
-    # Sidecar .sha256 URL failed (common for newer Go releases); fall back to the JSON download index.
-    expected_sha=$(curl -fsSL --retry 3 "https://go.dev/dl/?mode=json&include=all" \
-      | sed 's/},{/}\n{/g' \
-      | awk -F'"' -v fn="go${required_go}.linux-${go_arch}.tar.gz" \
-          '$0 ~ fn { for(i=1;i<=NF;i++) if($i=="sha256") { print $(i+2); exit } }')
+    expected_sha=$(curl -fsSL --retry 3 "https://go.dev/dl/?mode=json&include=all" 2>/dev/null \
+      | awk -v fn="${go_tarball}" '/"filename"/ && $0 ~ fn { found=1 } found && /"sha256"/ { gsub(/[^a-fA-F0-9]/,"",$NF); print $NF; exit }' \
+      || true)
+  fi
+  # Level 3: bundled checksums in this repository (works when go.dev is blocked).
+  if [[ ! ${expected_sha} =~ ^[a-fA-F0-9]{64}$ ]]; then
+    _checksums_url="https://raw.githubusercontent.com/${REPOSITORY}/${commit}/scripts/go-checksums.txt"
+    expected_sha=$(curl -fsSL --retry 3 "${_checksums_url}" 2>/dev/null \
+      | awk -v fn="${go_tarball}" '$2 == fn { print $1; exit }' \
+      || true)
   fi
   [[ ${expected_sha} =~ ^[a-fA-F0-9]{64}$ ]] || fail "could not obtain the official Go checksum"
   curl -fsSL --retry 3 "${go_url}" -o "${go_archive}"
