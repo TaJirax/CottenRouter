@@ -25,11 +25,18 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           mkdir -p dist
+          # Export the pair, rather than prefixing go build: a command prefix is
+          # not visible to the shell expanding the -o path, which silently wrote
+          # every target to the same file.
           for target in linux/amd64 linux/arm64; do
-            GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath \
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            output="dist/cottenrouter-${GOOS}-${GOARCH}"
+            go build -trimpath \
               -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "dist/cottenrouter-${GOOS}-${GOARCH}" ./cmd/cottenrouter
+              -o "$output" ./cmd/cottenrouter
+            test -s "$output"
           done
+          ls -1 dist
           cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
