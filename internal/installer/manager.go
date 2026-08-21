@@ -114,6 +114,10 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 			externalListeners = append(externalListeners, listener)
 		}
 	}
+	// A backend that is stopped right now still owns its port: the router
+	// config routes to it. Without this, installing a second protocol could
+	// hand out a port the first one takes back on its next start.
+	externalListeners = append(externalListeners, reservedRouterPorts(request.RouterConfig, spec)...)
 	plan := PlanPorts(externalListeners, request)
 	if plan.DNSPort == 0 || (request.EnableDoT && (plan.DoTPublicPort == 0 || plan.DoTPrivatePort == 0)) || (request.EnableDoH && (plan.DoHPublicPort == 0 || plan.DoHPrivatePort == 0)) {
 		return plan, fmt.Errorf("no safe private port is available")
@@ -724,6 +728,48 @@ func protectedFuserScript(realFuser string, protected []string) string {
 	return "#!/bin/sh\ncase \" $* \" in " + strings.Join(patterns, "|") + ") exit 1 ;; esac\nexec " + strconv.Quote(realFuser) + " \"$@\"\n"
 }
 
+// reservedRouterPorts reports the loopback backend ports and public TLS
+// ports the router already routes to, excluding the backend being installed.
+// They are treated as occupied even when nothing is listening on them.
+func reservedRouterPorts(routerConfigPath string, spec Spec) []Listener {
+	cfg, err := config.Load(routerConfigPath)
+	if err != nil {
+		return nil
+	}
+	var reserved []Listener
+	reserve := func(owner, address string) {
+		if address == "" || address == "disabled" {
+			return
+		}
+		_, portText, err := net.SplitHostPort(address)
+		if err != nil {
+			return
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			return
+		}
+		reserved = append(reserved, Listener{Port: port, Address: address, Process: "reserved by route " + owner + " in the CottenRouter config"})
+	}
+	for _, route := range cfg.Routes {
+		if route.Name == spec.ID || (spec.Kind == ConfigSlipGate && strings.HasPrefix(route.Name, "slipgate:")) {
+			continue
+		}
+		reserve(route.Name, route.Backend)
+		reserve(route.Name, route.TCPBackend)
+	}
+	for _, listener := range cfg.TLSListeners {
+		reserve(listener.Name, listener.Listen)
+		for _, route := range listener.Routes {
+			if strings.HasPrefix(route.Name, spec.ID+"-") {
+				continue
+			}
+			reserve(route.Name, route.Backend)
+		}
+	}
+	return reserved
+}
+
 func listenerOwnedBySpec(listener Listener, spec Spec) bool {
 	process := strings.ToLower(listener.Process)
 	for _, candidate := range []string{spec.ID, spec.Service, strings.ToLower(spec.Name)} {
@@ -1094,8 +1140,22 @@ func updateRouterConfigInternal(path string, spec Spec, request Request, plan Po
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	cfg.ListenUDP, cfg.ListenTCP, cfg.AdminListen = "0.0.0.0:53", "0.0.0.0:53", "127.0.0.1:9088"
-	cfg.MaxPacketSize = 16 * 1024
+	// Seed the defaults on a fresh config, but never overwrite settings an
+	// operator already chose: installing a second backend used to move a
+	// custom admin port back to 9088 and force DNS-over-TCP back on.
+	if cfg.ListenUDP == "" {
+		cfg.ListenUDP = "0.0.0.0:53"
+	}
+	if cfg.AdminListen == "" {
+		cfg.AdminListen = "127.0.0.1:9088"
+	}
+	if cfg.ListenTCP == "" && (request.EnableTCP || spec.Kind == ConfigSlipGate) {
+		// A TCP backend is unreachable without the router listening on TCP.
+		cfg.ListenTCP = "0.0.0.0:53"
+	}
+	if cfg.MaxPacketSize == 0 {
+		cfg.MaxPacketSize = 16 * 1024
+	}
 	cfg.Routes = removeRoute(cfg.Routes, "bootstrap-placeholder")
 	if spec.Kind == ConfigSlipGate {
 		routes, err := config.LoadSlipGateRoutes(spec.ConfigPath)
@@ -1126,15 +1186,22 @@ func updateRouterConfigInternal(path string, spec Spec, request Request, plan Po
 		}
 		cfg.Routes = upsertRoute(cfg.Routes, config.Route{Name: spec.ID, Domains: domains, Backend: fmt.Sprintf("127.0.0.1:%d", request.PrivatePort), TCPBackend: tcpBackend})
 	}
-	if request.EnableDoT {
-		cfg.TLSListeners = upsertTLS(cfg.TLSListeners, "dot", plan.DoTPublicPort, "cottendns-dot", request.DoTDomain, plan.DoTPrivatePort)
-	} else {
-		cfg.TLSListeners = removeTLSRoute(cfg.TLSListeners, "cottendns-dot")
+	// These routes belong to the backend that supports the transport. Without
+	// the guard, installing any other protocol deleted the encrypted routes of
+	// a backend it has nothing to do with. Removal is already spec-scoped.
+	if spec.SupportsDoT {
+		if request.EnableDoT {
+			cfg.TLSListeners = upsertTLS(cfg.TLSListeners, "dot", plan.DoTPublicPort, "cottendns-dot", request.DoTDomain, plan.DoTPrivatePort)
+		} else {
+			cfg.TLSListeners = removeTLSRoute(cfg.TLSListeners, "cottendns-dot")
+		}
 	}
-	if request.EnableDoH && plan.DoHMode == "router-front" {
-		cfg.TLSListeners = upsertTLS(cfg.TLSListeners, "https", plan.DoHPublicPort, "cottendns-doh", request.DoHDomain, plan.DoHPrivatePort)
-	} else {
-		cfg.TLSListeners = removeTLSRoute(cfg.TLSListeners, "cottendns-doh")
+	if spec.SupportsDoH {
+		if request.EnableDoH && plan.DoHMode == "router-front" {
+			cfg.TLSListeners = upsertTLS(cfg.TLSListeners, "https", plan.DoHPublicPort, "cottendns-doh", request.DoHDomain, plan.DoHPrivatePort)
+		} else {
+			cfg.TLSListeners = removeTLSRoute(cfg.TLSListeners, "cottendns-doh")
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated router config: %w", err)
