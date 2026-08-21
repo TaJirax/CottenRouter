@@ -21,6 +21,7 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: bash -n scripts/*.sh
+      - run: bash scripts/install-parse-test.sh
       - name: Build release binaries
         env:
           CGO_ENABLED: '0'

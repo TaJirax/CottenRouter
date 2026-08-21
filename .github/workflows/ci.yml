@@ -27,6 +27,7 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
       - run: go build ./cmd/cottenrouter
       - run: bash -n scripts/*.sh
+      - run: bash scripts/install-parse-test.sh
 
   docker:
     runs-on: ubuntu-latest

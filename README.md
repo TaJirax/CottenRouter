@@ -57,10 +57,26 @@ curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/i
 sudo cottenrouter tui
 ```
 
-The bootstrap checks every required host tool, downloads the exact Go toolchain
-`go.mod` declares (verified against the official checksum), runs the test suite,
-ensures at least 2 GiB of swap, and starts a safe DNS-only configuration.
-Re-running it upgrades in place.
+By default this installs the **latest tagged release**: a checksum-verified
+`linux/amd64` or `linux/arm64` binary from the GitHub release, so no Go
+toolchain, build cache or compile time is needed on the server. Other
+architectures, and `--build-from-source`, compile the pinned tag locally
+against the exact Go toolchain `go.mod` declares.
+
+The bootstrap checks every required host tool and systemd version, preflights
+every port the configuration actually uses, handles `systemd-resolved` and
+`/etc/resolv.conf` together, adds swap on small instances, opens only the
+firewall ports the configuration serves, and waits for the router to pass its
+own health check before committing. Any failure prints the service status and
+journal, then rolls the host back. Re-running it upgrades in place.
+
+```bash
+# options (pass after `sudo bash -s --`)
+--version=v1.2.2      install a specific release
+--channel=edge        build the current default-branch commit (development)
+--build-from-source   compile locally instead of using the release binary
+--no-swap             skip the swap safeguard
+```
 
 Removal preserves backend and panel data by default:
 
@@ -70,7 +86,7 @@ sudo cottenrouter-uninstall
 
 `--purge --confirm CottenRouter` also deletes the router config.
 `--remove-swap --confirm CottenRouter` removes installer-owned swap only.
-Port-53 firewall rules are removed only when the installer recorded adding them;
+Firewall rules are removed only when the installer recorded adding them;
 pre-existing rules are never touched. The `cottenrouter` account is deleted on
 `--purge` only when an ownership marker shows the installer created it.
 

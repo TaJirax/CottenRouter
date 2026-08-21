@@ -149,13 +149,13 @@ if ${resolved_removed}; then
   fi
 fi
 
-# Remove only the port-53 rules install.sh recorded as its own. Anything the
+# Remove only the firewall rules install.sh recorded as its own. Anything the
 # operator or another project added is left in place.
 if [[ -f ${FIREWALL_MARKER} ]]; then
   firewall_kind=$(awk '$1 == "kind" { print $2; exit }' "${FIREWALL_MARKER}")
   mapfile -t owned_ports < <(awk '$1 == "port" { print $2 }' "${FIREWALL_MARKER}")
   for owned_port in "${owned_ports[@]}"; do
-    [[ ${owned_port} =~ ^53/(udp|tcp)$ ]] || fail "unsafe firewall ownership record: ${owned_port}"
+    [[ ${owned_port} =~ ^[0-9]{1,5}/(udp|tcp)$ ]] || fail "unsafe firewall ownership record: ${owned_port}"
   done
   if [[ ${firewall_kind} == ufw ]] && command -v ufw >/dev/null 2>&1; then
     for owned_port in "${owned_ports[@]}"; do

@@ -51,6 +51,24 @@ if (( current_swap_kib >= TARGET_SWAP_KIB )); then
   exit 0
 fi
 
+# Swap is a cushion for small instances, not a hard requirement. A host
+# with plenty of RAM, or a filesystem that cannot carry a swap file
+# (Btrfs without no-COW, ZFS), must not block the whole installation.
+total_ram_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+if (( total_ram_kib > 4194304 )); then
+  swap_required=false
+else
+  swap_required=true
+fi
+give_up() {
+  echo "$1" >&2
+  if ${swap_required}; then
+    exit 1
+  fi
+  echo "Continuing without the swap safeguard: this host has $((total_ram_kib / 1024)) MiB of RAM." >&2
+  exit 0
+}
+
 install -d -o root -g root -m 0700 "${SWAP_DIRECTORY}"
 if [[ ! -e ${SWAP_FILE} ]]; then
   [[ ! -e ${SWAP_CANDIDATE} ]] || { echo "Refusing pre-existing swap staging file" >&2; exit 1; }
@@ -69,16 +87,21 @@ if [[ ! -e ${SWAP_FILE} ]]; then
   trap 'cleanup_candidate; exit 1' HUP INT TERM
   install -o root -g root -m 0600 /dev/null "${SWAP_CANDIDATE}"
   candidate_created=true
-  allocation_kib=$((TARGET_SWAP_KIB - current_swap_kib))
+  # mkswap consumes a header page and rounds down, so a bare 2 GiB file
+  # never reports a full 2 GiB of SwapTotal. Allocate 64 MiB of headroom.
+  allocation_kib=$((TARGET_SWAP_KIB - current_swap_kib + 65536))
   available_kib=$(df -Pk "${SWAP_DIRECTORY}" | awk 'NR == 2 { print $4 }')
   if [[ ! ${available_kib} =~ ^[0-9]+$ ]] || (( available_kib < allocation_kib + 65536 )); then
-    echo "At least $((allocation_kib + 65536)) KiB of free disk is required to create safe swap headroom." >&2
-    exit 1
+    cleanup_candidate
+    give_up "At least $((allocation_kib + 65536)) KiB of free disk is required to create safe swap headroom."
   fi
   if ! fallocate -l "${allocation_kib}K" "${SWAP_CANDIDATE}"; then
     dd if=/dev/zero of="${SWAP_CANDIDATE}" bs=1K count="${allocation_kib}" status=progress
   fi
-  mkswap "${SWAP_CANDIDATE}"
+  if ! mkswap "${SWAP_CANDIDATE}"; then
+    cleanup_candidate
+    give_up "mkswap failed on ${SWAP_DIRECTORY}; this filesystem may not support swap files (Btrfs needs a no-COW file, ZFS needs a zvol)."
+  fi
   mv -- "${SWAP_CANDIDATE}" "${SWAP_FILE}"
   candidate_created=false
   final_created=true
@@ -91,7 +114,9 @@ fi
 # marker, so an unrelated administrator file is never mutated or activated.
 chmod 0600 "${SWAP_FILE}"
 if ! swapon --show=NAME --noheadings | grep -Fxq "${SWAP_FILE}"; then
-  swapon "${SWAP_FILE}"
+  if ! swapon "${SWAP_FILE}"; then
+    give_up "swapon failed for ${SWAP_FILE}; this filesystem may not support swap files (Btrfs needs a no-COW file, ZFS needs a zvol)."
+  fi
 fi
 
 fstab_entry="${SWAP_FILE} none swap sw 0 0"
@@ -105,7 +130,6 @@ fi
 
 current_swap_kib=$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)
 if (( current_swap_kib < TARGET_SWAP_KIB )); then
-  echo "Swap remains below 2 GiB; inspect existing swap configuration." >&2
-  exit 1
+  give_up "Swap remains below 2 GiB (${current_swap_kib} KiB); inspect the existing swap configuration."
 fi
 echo "Swap safeguard active (${current_swap_kib} KiB total)."
