@@ -216,8 +216,14 @@ func (m Manager) enableSlipGateManagedServices(ctx context.Context, configPath s
 		return err
 	}
 	for _, service := range services {
-		if err := m.Runner.Run(ctx, "systemctl", []string{"enable", "--now", service}, "/", false); err != nil {
+		if err := m.Runner.Run(ctx, "systemctl", []string{"enable", service}, "/", false); err != nil {
 			return fmt.Errorf("enable managed SlipGate service %s: %w", service, err)
+		}
+		// SlipGate's own installer starts these on port 53. `--now` would
+		// leave an already-running unit on the config it was started with,
+		// so restart it onto the loopback port CottenRouter just wrote.
+		if err := m.Runner.Run(ctx, "systemctl", []string{"restart", service}, "/", false); err != nil {
+			return fmt.Errorf("restart managed SlipGate service %s onto its private port: %w", service, err)
 		}
 	}
 	return nil

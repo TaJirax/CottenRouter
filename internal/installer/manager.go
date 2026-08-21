@@ -95,7 +95,11 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 		return PortPlan{}, err
 	}
 	for _, listener := range listeners {
-		if listener.Port == 53 && !strings.Contains(strings.ToLower(listener.Process), "cottenrouter") {
+		// The backend being installed is allowed to hold port 53 here: its own
+		// installer takes that port, and an earlier failed run can leave it
+		// there. It is moved onto a loopback port and restarted below. Any
+		// other owner is still refused rather than stopped.
+		if listener.Port == 53 && !isCottenRouterListener(listener) && !listenerOwnedBySpec(listener, spec) {
 			return PortPlan{}, fmt.Errorf("port 53 is owned by %s; refusing to stop or replace it", listener.Process)
 		}
 	}
@@ -310,14 +314,28 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 		if err := m.restartSlipGateTLSBackends(ctx, slipGateTLSPlan); err != nil {
 			return plan, err
 		}
-	} else if err := m.Runner.Run(ctx, "systemctl", []string{"enable", "--now", spec.Service}, "/", false); err != nil {
-		return plan, fmt.Errorf("restart %s: %w", spec.Service, err)
+	} else {
+		// The upstream installers all insist on owning port 53 during their own
+		// run, so the backend is left listening there when they finish. Its
+		// config has just been rewritten to a loopback port, and `enable --now`
+		// does nothing to an already-running unit: it has to be restarted, or it
+		// keeps port 53 and the router can never take it back.
+		if err := m.Runner.Run(ctx, "systemctl", []string{"enable", spec.Service}, "/", false); err != nil {
+			return plan, fmt.Errorf("enable %s: %w", spec.Service, err)
+		}
+		if err := m.Runner.Run(ctx, "systemctl", []string{"restart", spec.Service}, "/", false); err != nil {
+			return plan, fmt.Errorf("restart %s onto its private port: %w", spec.Service, err)
+		}
 	}
 	progress("Restarting CottenRouter and verifying services")
 	for _, target := range uniqueFirewallPorts(publicPorts(request, plan), slipGateTLSPublicPorts(slipGateTLSPlan)) {
 		if err := openFirewall(ctx, m.Runner, target); err != nil {
 			return plan, fmt.Errorf("open public %d/%s: %w", target.port, target.protocol, err)
 		}
+	}
+	progress("Waiting for the backend to release port 53 back to CottenRouter")
+	if err := m.waitForRouterPortsReleased(ctx, request.RouterConfig); err != nil {
+		return plan, err
 	}
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
 		return plan, err
@@ -364,47 +382,114 @@ type expectedPrivateListener struct {
 	port     int
 }
 
+// routerEndpoint is one protocol/port pair the router is configured to own.
+type routerEndpoint struct {
+	protocol string
+	port     int
+}
+
+func routerEndpoints(cfg config.Config) ([]routerEndpoint, error) {
+	parse := func(protocol, address string) (routerEndpoint, error) {
+		_, portText, err := net.SplitHostPort(address)
+		if err != nil {
+			return routerEndpoint{}, err
+		}
+		port, err := strconv.Atoi(portText)
+		return routerEndpoint{protocol: protocol, port: port}, err
+	}
+	endpoints := make([]routerEndpoint, 0, 3+len(cfg.TLSListeners))
+	udp, err := parse("udp", cfg.ListenUDP)
+	if err != nil {
+		return nil, err
+	}
+	endpoints = append(endpoints, udp)
+	if cfg.ListenTCP != "" {
+		tcp, err := parse("tcp", cfg.ListenTCP)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, tcp)
+	}
+	admin, err := parse("tcp", cfg.AdminListen)
+	if err != nil {
+		return nil, err
+	}
+	endpoints = append(endpoints, admin)
+	for _, listener := range cfg.TLSListeners {
+		tlsEndpoint, err := parse("tcp", listener.Listen)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, tlsEndpoint)
+	}
+	return endpoints, nil
+}
+
+func isCottenRouterListener(listener Listener) bool {
+	return strings.Contains(strings.ToLower(listener.Process), "cottenrouter")
+}
+
+func listenerMatches(listener Listener, target routerEndpoint) bool {
+	protocol := strings.TrimSuffix(strings.ToLower(listener.Protocol), "6")
+	return listener.Port == target.port && protocol == target.protocol
+}
+
+// waitForRouterPortsReleased blocks until nothing except CottenRouter holds a
+// port the router is configured to own. Every upstream backend installer
+// takes port 53 for itself during its run; the backend is then reconfigured
+// onto a loopback port and restarted, and the router only reclaims 53 once
+// that hand-back has actually happened. Without this the restart fails with
+// nothing but a systemd exit code to explain why.
+func (m Manager) waitForRouterPortsReleased(ctx context.Context, configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	expected, err := routerEndpoints(cfg)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		listeners, scanErr := m.Scan(ctx)
+		if scanErr != nil {
+			return scanErr
+		}
+		blocker := ""
+		for _, target := range expected {
+			for _, listener := range listeners {
+				if listenerMatches(listener, target) && !isCottenRouterListener(listener) {
+					blocker = fmt.Sprintf("%d/%s is still held by %s", target.port, target.protocol, listener.Process)
+					break
+				}
+			}
+			if blocker != "" {
+				break
+			}
+		}
+		if blocker == "" {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("CottenRouter cannot reclaim its ports: %s", blocker)
+		}
+		select {
+		case <-ctx.Done():
+			// Report what is holding the port even when the wait is cut short.
+			return fmt.Errorf("CottenRouter cannot reclaim its ports: %s: %w", blocker, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func (m Manager) waitForRouterListeners(ctx context.Context, configPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
-	type endpoint struct {
-		protocol string
-		port     int
-	}
-	parseEndpoint := func(protocol, address string) (endpoint, error) {
-		_, portText, err := net.SplitHostPort(address)
-		if err != nil {
-			return endpoint{}, err
-		}
-		port, err := strconv.Atoi(portText)
-		return endpoint{protocol: protocol, port: port}, err
-	}
-	expected := make([]endpoint, 0, 3+len(cfg.TLSListeners))
-	udp, err := parseEndpoint("udp", cfg.ListenUDP)
+	expected, err := routerEndpoints(cfg)
 	if err != nil {
 		return err
-	}
-	expected = append(expected, udp)
-	if cfg.ListenTCP != "" {
-		tcp, err := parseEndpoint("tcp", cfg.ListenTCP)
-		if err != nil {
-			return err
-		}
-		expected = append(expected, tcp)
-	}
-	admin, err := parseEndpoint("tcp", cfg.AdminListen)
-	if err != nil {
-		return err
-	}
-	expected = append(expected, admin)
-	for _, listener := range cfg.TLSListeners {
-		tlsEndpoint, err := parseEndpoint("tcp", listener.Listen)
-		if err != nil {
-			return err
-		}
-		expected = append(expected, tlsEndpoint)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -416,8 +501,7 @@ func (m Manager) waitForRouterListeners(ctx context.Context, configPath string) 
 		for _, target := range expected {
 			found := false
 			for _, listener := range listeners {
-				protocol := strings.TrimSuffix(strings.ToLower(listener.Protocol), "6")
-				if listener.Port == target.port && protocol == target.protocol && strings.Contains(strings.ToLower(listener.Process), "cottenrouter") {
+				if listenerMatches(listener, target) && isCottenRouterListener(listener) {
 					found = true
 					break
 				}

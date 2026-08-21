@@ -317,7 +317,22 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 			rollback()
 			return plan, err
 		}
-	} else if err := m.Runner.Run(ctx, "systemctl", []string{"enable", "--now", spec.Service}, "/", false); err != nil {
+	} else {
+		// The upstream installers all insist on owning port 53 during their own
+		// run, so the backend is left listening there when they finish. Its
+		// config has just been rewritten to a loopback port, and `enable --now`
+		// does nothing to an already-running unit: it has to be restarted, or it
+		// keeps port 53 and the router can never take it back.
+		if err := m.Runner.Run(ctx, "systemctl", []string{"enable", spec.Service}, "/", false); err != nil {
+			rollback()
+			return plan, err
+		}
+		if err := m.Runner.Run(ctx, "systemctl", []string{"restart", spec.Service}, "/", false); err != nil {
+			rollback()
+			return plan, err
+		}
+	}
+	if err := m.waitForRouterPortsReleased(ctx, request.RouterConfig); err != nil {
 		rollback()
 		return plan, err
 	}
@@ -638,6 +653,9 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 			}
 		}
 	} else if err := m.Runner.Run(ctx, "systemctl", []string{"restart", spec.Service}, "/", false); err != nil {
+		return fail(err)
+	}
+	if err := m.waitForRouterPortsReleased(ctx, routerConfig); err != nil {
 		return fail(err)
 	}
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
