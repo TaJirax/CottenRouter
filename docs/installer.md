@@ -100,6 +100,8 @@ ownership marker it wrote at install time; nothing else in the firewall is
 touched. On `--purge` the `cottenrouter` account is deleted only when the
 installer's account ownership marker records that the installer created it.
 Use `--purge --confirm CottenRouter` for the router config and
+`--purge --purge-backends --confirm CottenRouter` to additionally remove all
+managed DNS backend services, pinned installers, and backend data. Use
 `--remove-swap --confirm CottenRouter` only when the swap ownership marker is
 present. Backend projects have their own separately confirmed removal workflow
 in the Project Manager.

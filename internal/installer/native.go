@@ -174,7 +174,11 @@ func loadInstallManifestFile(projectID string, locate func(string) (string, erro
 
 func (m Manager) runNativeUninstall(ctx context.Context, spec Spec) error {
 	if spec.Kind == ConfigSlipGate {
-		return m.runProtectedCommand(ctx, spec, "slipgate", []string{"uninstall"}, spec.WorkDir)
+		slipgateBin, err := resolveSlipGateBinary(spec.WorkDir)
+		if err != nil {
+			return err
+		}
+		return m.runProtectedCommand(ctx, spec, slipgateBin, []string{"uninstall"}, spec.WorkDir)
 	}
 	manifest, err := loadInstallManifest(spec.ID)
 	if err != nil {

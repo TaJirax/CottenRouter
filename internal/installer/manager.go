@@ -591,7 +591,33 @@ func listenerIsLoopback(address string) bool {
 
 func (m Manager) runProtectedSlipGate(ctx context.Context, workDir string) error {
 	spec, _ := FindSpec("slipgate")
-	return m.runProtectedCommand(ctx, spec, "slipgate", nil, workDir)
+	slipgateBin, err := resolveSlipGateBinary(workDir)
+	if err != nil {
+		return err
+	}
+	return m.runProtectedCommand(ctx, spec, slipgateBin, nil, workDir)
+}
+
+// resolveSlipGateBinary finds the slipgate binary by checking PATH first, then
+// common install locations. The protected command shim prepends its own
+// directory to PATH, which can shadow the real binary; resolving the absolute
+// path before the shim is installed avoids that.
+func resolveSlipGateBinary(workDir string) (string, error) {
+	if path, err := exec.LookPath("slipgate"); err == nil {
+		return path, nil
+	}
+	candidates := []string{
+		filepath.Join(workDir, "slipgate"),
+		"/usr/local/bin/slipgate",
+		"/usr/bin/slipgate",
+		"/etc/slipgate/slipgate",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("slipgate binary not found on PATH or in %s, /usr/local/bin, /usr/bin, /etc/slipgate; is SlipGate installed?", workDir)
 }
 
 func (m Manager) runProtectedCommand(ctx context.Context, spec Spec, command string, args []string, workDir string) error {
@@ -924,7 +950,7 @@ func privateSlipGateUnit(unit []byte, port int) ([]byte, bool) {
 
 func slipGateDNSTransport(value string) bool {
 	switch value {
-	case "dnstt", "slipstream", "vaydns":
+	case "dnstt", "slipstream", "vaydns", "external":
 		return true
 	}
 	return false

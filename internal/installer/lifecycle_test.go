@@ -120,8 +120,24 @@ func TestSlipGateManagedDNSUnitIsForcedToLoopback(t *testing.T) {
 	if !changed || strings.Contains(string(unit), "0.0.0.0:5310") || !strings.Contains(string(unit), "127.0.0.1:5310") {
 		t.Fatalf("unit was not privatized: %s", unit)
 	}
-	if slipGateDNSTransport("naive") || !slipGateDNSTransport("vaydns") {
+	if slipGateDNSTransport("naive") || !slipGateDNSTransport("vaydns") || !slipGateDNSTransport("external") {
 		t.Fatal("transport classification is unsafe")
+	}
+}
+
+func TestResolveSlipGateBinaryFromWorkDir(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	workDir := t.TempDir()
+	binary := filepath.Join(workDir, "slipgate")
+	if err := os.WriteFile(binary, []byte("fixture"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveSlipGateBinary(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != binary {
+		t.Fatalf("resolved %q, want %q", got, binary)
 	}
 }
 

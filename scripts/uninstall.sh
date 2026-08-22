@@ -18,6 +18,7 @@ readonly ACCOUNT_MARKER_VALUE=cottenrouter-account-v1
 readonly FIREWALL_MARKER=${SWAP_DIRECTORY}/firewall.created-by-cottenrouter
 
 purge=false
+purge_backends=false
 remove_swap=false
 confirmation=""
 
@@ -32,8 +33,12 @@ them, as recorded by its ownership markers.
 
 Options:
   --purge                 Also delete /etc/cottenrouter and its router config.
+  --purge-backends        Also stop, disable, and uninstall all DNS backend
+                          services that CottenRouter installed (cottendns,
+                          masterdnsvpn, stormdns, thefeed-server, slipgate-*).
+                          Requires --purge and --confirm CottenRouter.
   --remove-swap           Remove swap only if this installer created it.
-  --confirm CottenRouter  Required with --purge or --remove-swap.
+  --confirm CottenRouter  Required with --purge, --purge-backends, or --remove-swap.
   -h, --help              Show this help.
 EOF
 }
@@ -56,6 +61,10 @@ while (( $# > 0 )); do
   case "$1" in
     --purge)
       purge=true
+      shift
+      ;;
+    --purge-backends)
+      purge_backends=true
       shift
       ;;
     --remove-swap)
@@ -83,8 +92,11 @@ fi
 if [[ ! -r /proc/sys/kernel/ostype ]]; then
   fail "server removal supports Linux only"
 fi
-if { ${purge} || ${remove_swap}; } && [[ ${confirmation} != CottenRouter ]]; then
-  fail "--purge and --remove-swap require --confirm CottenRouter"
+if { ${purge} || ${purge_backends} || ${remove_swap}; } && [[ ${confirmation} != CottenRouter ]]; then
+  fail "--purge, --purge-backends, and --remove-swap require --confirm CottenRouter"
+fi
+if ${purge_backends} && ! ${purge}; then
+  fail "--purge-backends requires --purge"
 fi
 if ${remove_swap} && [[ ! -f ${SWAP_MARKER} ]]; then
   fail "swap ownership marker is absent; refusing to remove a possibly user-managed swap file"
@@ -208,6 +220,90 @@ fi
 rm -rf -- "${LIB_DIR}"
 rm -f -- "${UNINSTALL_BIN_PATH}"
 
+# Remove all managed DNS backend services and their data when requested.
+backends_removed=false
+if ${purge_backends}; then
+  readonly BACKEND_SERVICES=(cottendns masterdnsvpn stormdns thefeed-server)
+  readonly BACKEND_DIRS=(
+    /opt/cottenrouter/backends/cottendns
+    /opt/cottenrouter/backends/masterdnsvpn
+    /opt/cottenrouter/backends/stormdns
+    /opt/thefeed
+  )
+  readonly BACKEND_IDS=(cottendns masterdnsvpn stormdns thefeed)
+  readonly PROJECT_STATE_DIR=/var/lib/cottenrouter/projects
+  readonly UPSTREAM_STATE_DIR=/var/lib/cottenrouter/upstreams
+
+  for service_name in "${BACKEND_SERVICES[@]}"; do
+    if systemctl is-active --quiet "${service_name}" 2>/dev/null; then
+      systemctl stop "${service_name}" 2>/dev/null || true
+    fi
+    systemctl disable "${service_name}" 2>/dev/null || true
+  done
+
+  # Stop and disable all SlipGate services (slipgate-dnsrouter plus tunnel units).
+  shopt -s nullglob
+  for unit_file in /etc/systemd/system/slipgate-*.service; do
+    svc_name=$(basename "${unit_file}" .service)
+    [[ ${svc_name} =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
+    if systemctl is-active --quiet "${svc_name}" 2>/dev/null; then
+      systemctl stop "${svc_name}" 2>/dev/null || true
+    fi
+    systemctl disable "${svc_name}" 2>/dev/null || true
+  done
+  shopt -u nullglob
+
+  # Run pinned native uninstallers for each backend that has an install record.
+  for backend_id in "${BACKEND_IDS[@]}" slipgate; do
+    manifest="${PROJECT_STATE_DIR}/${backend_id}.json"
+    pending="${PROJECT_STATE_DIR}/${backend_id}.pending.json"
+    for record in "${manifest}" "${pending}"; do
+      [[ -f ${record} ]] || continue
+      installer_file=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['installer_file'])" "${record}" 2>/dev/null) || continue
+      [[ -f ${installer_file} && ${installer_file} == /var/lib/cottenrouter/upstreams/* ]] || continue
+      echo "Running pinned native uninstaller for ${backend_id}..."
+      bash "${installer_file}" --uninstall 2>/dev/null || echo "  native ${backend_id} uninstaller returned non-zero (may be expected)"
+      break
+    done
+  done
+
+  # SlipGate native uninstaller
+  if command -v slipgate >/dev/null 2>&1; then
+    slipgate uninstall 2>/dev/null || true
+  fi
+
+  # Remove backend directories and systemd units.
+  for backend_dir in "${BACKEND_DIRS[@]}"; do
+    [[ -L ${backend_dir} ]] && continue
+    rm -rf -- "${backend_dir}" 2>/dev/null || true
+  done
+  if [[ -d /etc/slipgate && ! -L /etc/slipgate ]]; then
+    rm -rf -- /etc/slipgate 2>/dev/null || true
+  fi
+  rmdir --ignore-fail-on-non-empty /opt/cottenrouter/backends 2>/dev/null || true
+  rmdir --ignore-fail-on-non-empty /opt/cottenrouter 2>/dev/null || true
+
+  # Remove backend service units left behind.
+  for service_name in "${BACKEND_SERVICES[@]}" slipgate-dnsrouter; do
+    rm -f -- "/etc/systemd/system/${service_name}.service" 2>/dev/null || true
+    rm -rf -- "/etc/systemd/system/${service_name}.service.d" 2>/dev/null || true
+  done
+  shopt -s nullglob
+  for unit_file in /etc/systemd/system/slipgate-*.service; do
+    rm -f -- "${unit_file}" 2>/dev/null || true
+  done
+  for dropin_dir in /etc/systemd/system/slipgate-*.service.d; do
+    rm -rf -- "${dropin_dir}" 2>/dev/null || true
+  done
+  shopt -u nullglob
+
+  # Remove install records.
+  rm -rf -- "${PROJECT_STATE_DIR}" "${UPSTREAM_STATE_DIR}" 2>/dev/null || true
+
+  systemctl daemon-reload
+  backends_removed=true
+fi
+
 echo "CottenRouter was removed."
 if ! ${purge}; then
   echo "Router configuration was preserved in ${CONFIG_DIR}."
@@ -221,7 +317,14 @@ fi
 if ${firewall_removed}; then
   echo "Firewall rules added by this installer were removed."
 fi
-echo "Backend projects, panels, backend data, and pre-existing firewall rules were not removed."
+if ${backends_removed}; then
+  echo "All managed DNS backend services and their data were removed."
+else
+  echo "Backend projects, panels, backend data, and pre-existing firewall rules were not removed."
+  if ! ${purge_backends}; then
+    echo "Use --purge --purge-backends --confirm CottenRouter to also remove all DNS backends."
+  fi
+fi
 if [[ -d ${SWAP_DIRECTORY}/projects || -d ${SWAP_DIRECTORY}/upstreams ]]; then
   echo "Pinned backend uninstall records were preserved in ${SWAP_DIRECTORY}."
 fi

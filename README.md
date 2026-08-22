@@ -85,6 +85,8 @@ sudo cottenrouter-uninstall
 ```
 
 `--purge --confirm CottenRouter` also deletes the router config.
+`--purge --purge-backends --confirm CottenRouter` additionally removes all
+managed DNS backend services, pinned installers, and backend data.
 `--remove-swap --confirm CottenRouter` removes installer-owned swap only.
 Firewall rules are removed only when the installer recorded adding them;
 pre-existing rules are never touched. The `cottenrouter` account is deleted on
