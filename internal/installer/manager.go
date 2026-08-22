@@ -35,10 +35,29 @@ type OSRunner struct{}
 func (OSRunner) Run(ctx context.Context, name string, args []string, dir string, interactive bool) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	var captured bytes.Buffer
 	if interactive {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	} else {
+		// Without this every failure reaches the operator as a bare "exit
+		// status 1" with nothing to act on.
+		cmd.Stdout, cmd.Stderr = &captured, &captured
 	}
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(captured.String()); detail != "" {
+			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, lastLines(detail, 5))
+		}
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func lastLines(text string, n int) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "; ")
 }
 func (OSRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
