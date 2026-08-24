@@ -12,15 +12,13 @@
 [![License](https://img.shields.io/github/license/TaJirax/CottenRouter?style=flat-square)](LICENSE)
 [![Container](https://img.shields.io/badge/GHCR-multi--arch-blue?style=flat-square&logo=docker)](https://github.com/TaJirax/CottenRouter/pkgs/container/cottenrouter)
 
-[فارسی](README.fa.md) · [Install](#install-the-latest-stable-release) · [Usage](#use-the-control-deck) · [Commands](#command-reference) · [Docker](#docker) · [Uninstall](#uninstall) · [Credits](#projects-and-credits)
+[فارسی](README.fa.md) · [Install](#-installation) · [Usage](#-control-deck) · [Commands](#-command-reference) · [Docker](#-docker) · [Upgrade](#-upgrade) · [Uninstall](#-uninstall) · [Credits](#-projects-and-credits)
 
 </div>
 
 ---
 
-## Overview
-
-### What is CottenRouter?
+## ✨ Overview
 
 **CottenRouter** is a lightweight front router that lets multiple DNS-tunnel backends share one server, one IP address, and public port `53`. It reads the first DNS question, selects the longest matching configured suffix, and forwards the packet to the correct private backend.
 
@@ -37,7 +35,33 @@ Key features:
 - Rootless, read-only, shell-free Docker image
 - Checksum-verified `linux/amd64` and `linux/arm64` release binaries
 
-### Requirements
+### How traffic flows
+
+```mermaid
+flowchart LR
+    C[DNS / TLS clients] -->|UDP/TCP 53, DoT, HTTPS| R[CottenRouter]
+    R -->|Longest DNS suffix| D1[CottenDNS :5301]
+    R -->|Longest DNS suffix| D2[MasterDnsVPN :5302]
+    R -->|Longest DNS suffix| D3[StormDNS :5303]
+    R -->|Longest DNS suffix| D4[thefeed :5304]
+    R -->|DNS route or TLS SNI| D5[SlipGate services]
+    R -.->|Loopback only| A[Admin API :9088]
+```
+
+### Choose a deployment
+
+| | **Host installation** | **Docker** |
+|---|---|---|
+| Routing core | ✅ | ✅ |
+| Guided backend installers | ✅ | — |
+| Interactive control deck | ✅ | — |
+| systemd and firewall integration | ✅ | — |
+| Rootless runtime | — | ✅ |
+| Best for | A fresh server managed end to end | Existing container infrastructure |
+
+---
+
+## ✅ Requirements
 
 For a host installation you need:
 
@@ -49,7 +73,11 @@ For a host installation you need:
 
 WSL is supported for development and testing only. Use a native Linux server for production.
 
-### Install the latest stable release
+---
+
+## 🚀 Installation
+
+### Latest stable release
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh | sudo bash
@@ -87,7 +115,9 @@ curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/i
 | `--build-from-source` | Compile locally instead of using a release binary |
 | `--no-swap` | Skip the installer-owned emergency swap safeguard |
 
-### Use the control deck
+---
+
+## 🧭 Control deck
 
 ```bash
 sudo cottenrouter tui
@@ -107,7 +137,9 @@ sudo cottenrouter tui
 
 Give every backend a unique delegated domain, for example `cotten.example.com`, `master.example.com`, `storm.example.com`, and `feed.example.com`. Exact duplicate suffixes are rejected. Nested suffixes are supported and the longest match wins.
 
-### Status and configuration
+---
+
+## 📊 Status and configuration
 
 ```bash
 sudo systemctl status cottenrouter
@@ -142,7 +174,9 @@ cottenrouter catalog --offline
 
 The online catalog resolves and verifies each project's current default branch. The offline output is bundled fallback metadata and is not recommended for installation.
 
-### Command reference
+---
+
+## 📚 Command reference
 
 ```text
 cottenrouter tui               Install, manage, and monitor projects
@@ -183,7 +217,9 @@ Permanently remove that backend's managed data:
 sudo cottenrouter remove --project=cottendns --purge --confirm=cottendns
 ```
 
-### Docker
+---
+
+## 🐳 Docker
 
 The container runs the routing core only. You remain responsible for the lifecycle of backend containers.
 
@@ -213,16 +249,69 @@ docker compose down
 
 The official [`ghcr.io/tajirax/cottenrouter`](https://github.com/TaJirax/CottenRouter/pkgs/container/cottenrouter) image supports `linux/amd64` and `linux/arm64`. It listens on unprivileged port `5353` inside the container while Docker publishes host port `53`. It runs as UID `65532`, drops all capabilities, uses a read-only root filesystem, and includes no shell. See the [Docker guide](docs/docker.md).
 
-### Upgrade
+---
 
-Rerun the stable installer. It preserves configuration and rolls back if the new service fails its health check:
+## 🔄 Upgrade
+
+The installer upgrades CottenRouter **in place**. It snapshots the active configuration, replaces the binary, validates the configuration, restarts the service, and waits for the health probe. If any step fails, it restores the previous installation automatically.
+
+```mermaid
+flowchart LR
+    A[Current installation] --> B[Snapshot config and service state]
+    B --> C[Download and verify release]
+    C --> D[Validate and restart]
+    D -->|Health check passes| E[Upgrade complete]
+    D -->|Health check fails| F[Automatic rollback]
+```
+
+### Upgrade to the latest stable release
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh | sudo bash
-cottenrouter version
 ```
 
-### Uninstall
+### Upgrade or downgrade to an exact release
+
+Pinning a version is useful for reproducible deployments or returning to a known release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
+  | sudo bash -s -- --version=v1.2.8
+```
+
+Available versions are listed on the [Releases page](https://github.com/TaJirax/CottenRouter/releases).
+
+### Upgrade to the development channel
+
+Use this only when you intentionally want the latest default-branch commit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
+  | sudo bash -s -- --channel=edge
+```
+
+### Upgrade Docker
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The configuration is a read-only bind mount, so replacing the container does not replace your local config file.
+
+### Verify the upgrade
+
+```bash
+cottenrouter version
+sudo systemctl --no-pager --full status cottenrouter
+sudo cottenrouter healthz -config /etc/cottenrouter/config.json
+```
+
+> **Production tip:** use the stable channel or an exact version. Take a server snapshot before upgrading upstream backend projects, because their native installers run as root and are maintained independently.
+
+---
+
+## 🗑️ Uninstall
 
 Safely remove CottenRouter while preserving configuration, upstream projects, panels, pre-existing firewall rules, and swap:
 
@@ -253,7 +342,9 @@ sudo cottenrouter-uninstall --remove-swap --confirm CottenRouter
 
 Purge operations cannot be undone. CottenRouter removes only firewall rules, accounts, and swap carrying its ownership markers; it does not remove pre-existing state.
 
-### Routing and security model
+---
+
+## 🛡️ Routing and security model
 
 1. Parse the first DNS question and drop malformed packets.
 2. Select the longest configured domain suffix.
@@ -268,7 +359,9 @@ Remote backends are rejected by default, both UDP and TCP messages are capped at
 
 Read more in [Security](docs/security.md), [Installer and control deck](docs/installer.md), and [Backend integration](docs/backend-integration.md).
 
-### Build, test, and contribute
+---
+
+## 🛠️ Build, test, and contribute
 
 ```bash
 git clone https://github.com/TaJirax/CottenRouter.git
@@ -285,24 +378,19 @@ CI also checks five-backend isolation under load, full `16 KiB` packets, through
 
 Use [Issues](https://github.com/TaJirax/CottenRouter/issues) for bugs and feature requests, and [Pull Requests](https://github.com/TaJirax/CottenRouter/pulls) for code contributions.
 
-### Documentation and credits
+### Documentation
 
-- [Docker guide](docs/docker.md)
-- [Installer and control deck](docs/installer.md)
-- [Backend integration](docs/backend-integration.md)
-- [Security model](docs/security.md)
-- [Configuration example](cottenrouter.example.json)
-- [Latest release](https://github.com/TaJirax/CottenRouter/releases/latest)
-
-CottenRouter integrates with [CottenDNS](https://github.com/TaJirax/CottenDns), [MasterDnsVPN](https://github.com/masterking32/MasterDnsVPN), [StormDNS](https://github.com/nullroute1970/StormDNS), [thefeed](https://github.com/sartoopjj/thefeed), and [SlipGate](https://github.com/anonvector/slipgate). Thank you to every author and contributor behind those projects.
-
-The terminal UI uses [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), and [Lip Gloss](https://github.com/charmbracelet/lipgloss) from [Charm](https://charm.sh/). The secure container is based on [Distroless](https://github.com/GoogleContainerTools/distroless). See [`NOTICE.md`](NOTICE.md) and the complete dependency lists in [`go.mod`](go.mod) and [`go.sum`](go.sum).
+| Guide | Contents |
+|---|---|
+| [Docker](docs/docker.md) | Rootless container layout, networking, images, and updates |
+| [Installer and control deck](docs/installer.md) | TUI controls, ports, panels, safeguards, and removal |
+| [Backend integration](docs/backend-integration.md) | Domains, listeners, feature boundaries, and project notes |
+| [Security](docs/security.md) | Flood controls, resource limits, systemd hardening, and swap |
+| [Configuration example](cottenrouter.example.json) | Complete annotated-style configuration starting point |
 
 ---
 
----
-
-## Projects and credits
+## 🤝 Projects and credits
 
 CottenRouter is designed to interoperate with these independent open-source projects. We sincerely thank their authors and contributors:
 
@@ -320,7 +408,7 @@ No upstream source tree or binary is vendored in this repository. Every upstream
 
 ---
 
-## License
+## 📄 License
 
 CottenRouter is released under the [MIT License](LICENSE). Upstream integrations remain subject to their respective project licenses.
 
