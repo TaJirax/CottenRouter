@@ -328,8 +328,8 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 		if err := m.enableSlipGateManagedServices(ctx, spec.ConfigPath); err != nil {
 			return plan, err
 		}
-		if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false); err != nil {
-			return plan, fmt.Errorf("disable native SlipGate DNS router: %w", err)
+		if err := disableNativeSlipGateDNSRouter(ctx, m.Runner); err != nil {
+			return plan, err
 		}
 		if err := m.Runner.Run(ctx, "usermod", []string{"-aG", "slipgate", "cottenrouter"}, "/", false); err != nil {
 			return plan, fmt.Errorf("grant CottenRouter access to SlipGate keys: %w", err)

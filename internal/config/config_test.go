@@ -157,3 +157,19 @@ func TestLoadImportsEnabledSlipGateDNSTunnels(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsBackendPointingAtRouterItself(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"udp": {ListenUDP: "0.0.0.0:53", Routes: []Route{{Name: "cottendns", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:53"}}},
+		"tcp": {ListenUDP: "0.0.0.0:53", ListenTCP: "0.0.0.0:53", Routes: []Route{{Name: "cottendns", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:5301", TCPBackend: "127.0.0.1:53"}}},
+		"tls": {ListenUDP: "0.0.0.0:53", TLSListeners: []TLSListener{{Name: "dot", Listen: "0.0.0.0:853", Routes: []TLSRoute{{Name: "cottendns-dot", ServerNames: []string{"dot.example"}, Backend: "127.0.0.1:853"}}}}},
+	} {
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s: expected a self-routing loop to be rejected", name)
+		}
+	}
+	sane := Config{ListenUDP: "0.0.0.0:53", ListenTCP: "0.0.0.0:53", Routes: []Route{{Name: "cottendns", Domains: []string{"vpn.example"}, Backend: "127.0.0.1:5301", TCPBackend: "127.0.0.1:5301"}}}
+	if err := sane.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

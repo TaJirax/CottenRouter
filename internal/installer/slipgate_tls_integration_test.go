@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -292,6 +293,38 @@ func (runner *recordingIntegrationRunner) Run(_ context.Context, name string, ar
 func (runner *recordingIntegrationRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	if name == "systemctl" && len(args) > 0 && args[0] == "list-unit-files" {
 		return append([]byte(nil), runner.unitList...), nil
+	}
+	return nil, nil
+}
+
+// SlipGate only creates slipgate-dnsrouter when a DNS tunnel exists, so a
+// NaiveProxy/StunTLS-only install must not fail on the missing unit.
+func TestDisableNativeSlipGateDNSRouterToleratesMissingUnit(t *testing.T) {
+	runner := &stateRunner{active: "inactive", enabled: "not-found"}
+	if err := disableNativeSlipGateDNSRouter(context.Background(), runner); err != nil {
+		t.Fatal(err)
+	}
+	runner = &stateRunner{active: "active", enabled: "enabled", runErr: errors.New("boom")}
+	if err := disableNativeSlipGateDNSRouter(context.Background(), runner); err == nil {
+		t.Fatal("expected an error while the native DNS router still holds port 53")
+	}
+}
+
+type stateRunner struct {
+	active, enabled string
+	runErr          error
+}
+
+func (runner *stateRunner) Run(context.Context, string, []string, string, bool) error {
+	return runner.runErr
+}
+
+func (runner *stateRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	if name == "systemctl" && len(args) > 0 && args[0] == "is-active" {
+		return []byte(runner.active), nil
+	}
+	if name == "systemctl" && len(args) > 0 && args[0] == "is-enabled" {
+		return []byte(runner.enabled), nil
 	}
 	return nil, nil
 }

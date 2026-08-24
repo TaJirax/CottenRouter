@@ -597,3 +597,17 @@ func slipGateTLSListenerOwnedByBackend(listener Listener, backend SlipGateTLSBac
 		return false
 	}
 }
+
+// disableNativeSlipGateDNSRouter takes port 53 away from SlipGate's own DNS
+// router. SlipGate only creates that unit when at least one DNS tunnel exists,
+// so a NaiveProxy/StunTLS-only install has none and `disable --now` on it is a
+// hard error that used to abort the whole installation. What matters is the
+// end state, not the command's exit code.
+func disableNativeSlipGateDNSRouter(ctx context.Context, runner Runner) error {
+	_ = runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
+	state := snapshotManagedServiceState(ctx, runner, "slipgate-dnsrouter")
+	if state.active == "active" || state.enabled == "enabled" {
+		return fmt.Errorf("native SlipGate DNS router is still %s/%s; it would fight CottenRouter for port 53", state.active, state.enabled)
+	}
+	return nil
+}

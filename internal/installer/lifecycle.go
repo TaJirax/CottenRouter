@@ -313,7 +313,7 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 			rollback()
 			return plan, err
 		}
-		if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false); err != nil {
+		if err := disableNativeSlipGateDNSRouter(ctx, m.Runner); err != nil {
 			rollback()
 			return plan, err
 		}
@@ -641,7 +641,7 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 		if err := m.enableSlipGateManagedServices(ctx, spec.ConfigPath); err != nil {
 			return fail(err)
 		}
-		if err := m.Runner.Run(ctx, "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false); err != nil {
+		if err := disableNativeSlipGateDNSRouter(ctx, m.Runner); err != nil {
 			return fail(err)
 		}
 		if err := m.restartSlipGateTLSBackends(ctx, slipGateTLSPlan); err != nil {

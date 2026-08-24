@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -336,7 +337,7 @@ func (c *Config) Validate() error {
 			route.Domains[j] = normalized
 		}
 	}
-	return nil
+	return c.validateNoSelfRouting()
 }
 
 func (c *Config) validateTLSListeners() error {
@@ -499,4 +500,70 @@ func loadVerifyKey(verify VerifyConfig) ([]byte, error) {
 
 func (c Config) QueryTimeout() time.Duration {
 	return time.Duration(c.QueryTimeoutMS) * time.Millisecond
+}
+
+// validateNoSelfRouting rejects a backend that points back at one of
+// CottenRouter's own sockets. Advanced settings accept any 1-65535 private
+// port, so setting a backend to the router's own :53 used to be written out
+// happily and then forwarded every query straight back into the router: an
+// endless loop on both UDP and TCP.
+func (c Config) validateNoSelfRouting() error {
+	udpPorts, tcpPorts := map[int]bool{}, map[int]bool{}
+	if address, err := net.ResolveUDPAddr("udp", c.ListenUDP); err == nil && ownSocket(address.IP) {
+		udpPorts[address.Port] = true
+	}
+	listens := append([]string{}, c.ListenTCP)
+	for _, listener := range c.TLSListeners {
+		listens = append(listens, listener.Listen)
+	}
+	for _, listen := range listens {
+		if listen == "" {
+			continue
+		}
+		if address, err := net.ResolveTCPAddr("tcp", listen); err == nil && ownSocket(address.IP) {
+			tcpPorts[address.Port] = true
+		}
+	}
+	check := func(owner, backend string, ports map[int]bool) error {
+		if backend == "" || backend == "disabled" {
+			return nil
+		}
+		host, portText, err := net.SplitHostPort(backend)
+		if err != nil {
+			return nil
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil || !ports[port] {
+			return nil
+		}
+		if ip := net.ParseIP(strings.Trim(host, "[]")); ip == nil || !ownSocket(ip) {
+			return nil
+		}
+		return fmt.Errorf("%q backend %s is CottenRouter's own listener; it would forward every query back to itself", owner, backend)
+	}
+	for _, route := range c.Routes {
+		if err := check(route.Name, route.Backend, udpPorts); err != nil {
+			return err
+		}
+		if err := check(route.Name, route.TCPBackend, tcpPorts); err != nil {
+			return err
+		}
+	}
+	for _, listener := range c.TLSListeners {
+		if err := check(listener.Name, listener.DefaultBackend, tcpPorts); err != nil {
+			return err
+		}
+		for _, route := range listener.Routes {
+			if err := check(route.Name, route.Backend, tcpPorts); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ownSocket reports whether an address the router listens on also answers on
+// loopback, which is the only case where a loopback backend can be the router.
+func ownSocket(ip net.IP) bool {
+	return ip == nil || ip.IsUnspecified() || ip.IsLoopback()
 }
