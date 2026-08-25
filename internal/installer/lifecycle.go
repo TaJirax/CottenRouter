@@ -151,9 +151,9 @@ func tomlDomains(data []byte) []string {
 }
 
 func Credentials(projectID string, reveal bool) ([]Credential, error) {
-	spec, ok := FindSpec(projectID)
-	if !ok {
-		return nil, fmt.Errorf("unknown project %q", projectID)
+	spec, err := SpecFor(projectID)
+	if err != nil {
+		return nil, err
 	}
 	var credentials []Credential
 	addSecretFile := func(label, path string) {
@@ -395,9 +395,9 @@ func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, pur
 	if err := ensureServerHost(ctx, m.Runner); err != nil {
 		return err
 	}
-	spec, ok := FindSpec(projectID)
-	if !ok {
-		return fmt.Errorf("unknown project %q", projectID)
+	spec, err := SpecFor(projectID)
+	if err != nil {
+		return err
 	}
 	if routerConfig == "" {
 		routerConfig = "/etc/cottenrouter/config.json"
@@ -534,9 +534,9 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 	if err := ensureServerHost(ctx, m.Runner); err != nil {
 		return err
 	}
-	spec, ok := FindSpec(projectID)
-	if !ok {
-		return fmt.Errorf("unknown project %q", projectID)
+	spec, err := SpecFor(projectID)
+	if err != nil {
+		return err
 	}
 	if routerConfig == "" {
 		routerConfig = "/etc/cottenrouter/config.json"
@@ -911,9 +911,9 @@ func (m Manager) Service(ctx context.Context, projectID, action string) error {
 	if err := ensureServerHost(ctx, m.Runner); err != nil {
 		return err
 	}
-	spec, ok := FindSpec(projectID)
-	if !ok {
-		return fmt.Errorf("unknown project %q", projectID)
+	spec, err := SpecFor(projectID)
+	if err != nil {
+		return err
 	}
 	if action != "start" && action != "stop" && action != "restart" {
 		return fmt.Errorf("invalid service action %q", action)

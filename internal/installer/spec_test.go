@@ -1,6 +1,9 @@
 package installer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPlanPortsProtectsPanel(t *testing.T) {
 	request := Request{ProjectID: "cottendns", PrivatePort: 5301, EnableDoT: true, EnableDoH: true}
@@ -77,5 +80,37 @@ func TestRequiredBackendListenerMustBeOwnedAndLoopback(t *testing.T) {
 	listeners[1].Address = "[::1]:5301"
 	if missing := missingPrivateListeners(listeners, spec, expected); len(missing) != 0 {
 		t.Fatalf("valid loopback listeners were rejected: %+v", missing)
+	}
+}
+
+// `cottenrouter keys` with no flag used to fail with `unknown project ""`,
+// which reads like a broken install rather than a missing argument.
+func TestSpecForNamesTheFlagAndTheValidProjects(t *testing.T) {
+	if _, err := SpecFor(""); err == nil {
+		t.Fatal("empty project ID was accepted")
+	} else if !strings.Contains(err.Error(), "--project is required") || !strings.Contains(err.Error(), "cottendns") {
+		t.Fatalf("empty project error = %q", err)
+	}
+	if _, err := SpecFor("bogus"); err == nil {
+		t.Fatal("unknown project ID was accepted")
+	} else if !strings.Contains(err.Error(), `unknown project "bogus"`) || !strings.Contains(err.Error(), "slipgate") {
+		t.Fatalf("unknown project error = %q", err)
+	}
+	spec, err := SpecFor("cottendns")
+	if err != nil || spec.ID != "cottendns" {
+		t.Fatalf("SpecFor(cottendns) = %v %v", spec.ID, err)
+	}
+}
+
+func TestRequestValidateNamesMissingDomainFlag(t *testing.T) {
+	request := Request{ProjectID: "cottendns"}
+	if _, err := request.Validate(); err == nil {
+		t.Fatal("missing domain was accepted")
+	} else if !strings.Contains(err.Error(), "--domain is required") {
+		t.Fatalf("missing domain error = %q", err)
+	}
+	// SlipGate imports its domains from its own config and takes no --domain.
+	if _, err := (&Request{ProjectID: "slipgate"}).Validate(); err != nil {
+		t.Fatalf("SlipGate request rejected: %v", err)
 	}
 }

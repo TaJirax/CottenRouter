@@ -43,6 +43,24 @@ func FindSpec(id string) (Spec, bool) {
 	return Spec{}, false
 }
 
+// SpecFor resolves an operator-supplied project ID. A bare `cottenrouter keys`
+// used to report `unknown project ""`, which reads like a broken install
+// rather than a missing flag, so both cases name the valid IDs.
+func SpecFor(id string) (Spec, error) {
+	if spec, ok := FindSpec(id); ok {
+		return spec, nil
+	}
+	ids := make([]string, 0, len(Specs()))
+	for _, spec := range Specs() {
+		ids = append(ids, spec.ID)
+	}
+	choices := strings.Join(ids, ", ")
+	if strings.TrimSpace(id) == "" {
+		return Spec{}, fmt.Errorf("--project is required; choose one of: %s", choices)
+	}
+	return Spec{}, fmt.Errorf("unknown project %q; choose one of: %s", id, choices)
+}
+
 type Request struct {
 	ProjectID, Domain, ExtraDomains, ChatDomains string
 	PrivatePort                                  int
@@ -52,9 +70,9 @@ type Request struct {
 }
 
 func (r *Request) Validate() (Spec, error) {
-	spec, ok := FindSpec(r.ProjectID)
-	if !ok {
-		return Spec{}, fmt.Errorf("unknown project %q", r.ProjectID)
+	spec, err := SpecFor(r.ProjectID)
+	if err != nil {
+		return Spec{}, err
 	}
 	if r.PrivatePort == 0 {
 		r.PrivatePort = spec.DefaultPort
@@ -63,6 +81,11 @@ func (r *Request) Validate() (Spec, error) {
 		return Spec{}, fmt.Errorf("private port must be between 1024 and 65535")
 	}
 	if spec.Kind != ConfigSlipGate {
+		// A missing flag reported as `invalid domain ""` reads like a parser
+		// bug; name the flag instead, the way SpecFor does for --project.
+		if strings.TrimSpace(r.Domain) == "" {
+			return Spec{}, fmt.Errorf("--domain is required for %s", spec.Name)
+		}
 		domain, err := dnswire.NormalizeDomain(r.Domain)
 		if err != nil {
 			return Spec{}, fmt.Errorf("domain: %w", err)

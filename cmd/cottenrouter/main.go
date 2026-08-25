@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -62,12 +63,31 @@ func main() {
 	case "help", "-h", "--help":
 		usage()
 	default:
+		usage()
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cottenrouter:", err)
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		if !errors.Is(err, errFlagsReported) {
+			fmt.Fprintln(os.Stderr, "cottenrouter:", err)
+		}
 		os.Exit(1)
 	}
+}
+
+// errFlagsReported marks a flag.Parse failure. The flag package has already
+// written the message and the subcommand's usage to stderr, so main exits
+// without printing the same line a second time.
+var errFlagsReported = errors.New("flags reported")
+
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	err := flags.Parse(args)
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		return err
+	}
+	return errFlagsReported
 }
 
 func projectRequestFlags(name string, args []string) (installer.Request, error) {
@@ -83,7 +103,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
 	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return installer.Request{}, err
 	}
 	privatePort, err := strconv.Atoi(*port)
@@ -97,7 +117,7 @@ func serve(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	configPath := flags.String("config", "cottenrouter.json", "path to JSON configuration")
 	debug := flags.Bool("debug", false, "enable debug logs")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*configPath)
@@ -125,7 +145,7 @@ func healthz(args []string) error {
 	flags := flag.NewFlagSet("healthz", flag.ContinueOnError)
 	configPath := flags.String("config", "cottenrouter.json", "path to JSON configuration")
 	timeout := flags.Duration("timeout", 2*time.Second, "probe timeout")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*configPath)
@@ -152,7 +172,7 @@ func healthz(args []string) error {
 func check(args []string) error {
 	flags := flag.NewFlagSet("check", flag.ContinueOnError)
 	configPath := flags.String("config", "cottenrouter.json", "path to JSON configuration")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*configPath)
@@ -174,7 +194,7 @@ func check(args []string) error {
 func printCatalog(args []string) error {
 	flags := flag.NewFlagSet("catalog", flag.ContinueOnError)
 	offline := flags.Bool("offline", false, "use bundled fallback metadata without checking GitHub")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	projects := catalog.Projects()
@@ -203,7 +223,7 @@ func importSlipGate(args []string) error {
 	input := flags.String("input", "/etc/slipgate/config.json", "path to SlipGate config.json")
 	output := flags.String("output", "-", "output path, or - for stdout")
 	force := flags.Bool("force", false, "replace an existing output file")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	cfg, err := config.NewFromSlipGate(*input)
@@ -240,7 +260,7 @@ func runTUI(args []string) error {
 	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
 	configPath := flags.String("config", "/etc/cottenrouter/config.json", "router configuration path")
 	admin := flags.String("admin", "127.0.0.1:9088", "local CottenRouter admin address")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if cfg, err := config.Load(*configPath); err == nil {
@@ -286,7 +306,7 @@ func removeProject(args []string) error {
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
 	purge := flags.Bool("purge", false, "also permanently delete the project's managed directory")
 	confirm := flags.String("confirm", "", "required project ID confirmation when --purge is used")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if *project == "" {
@@ -302,7 +322,7 @@ func printKeys(args []string) error {
 	flags := flag.NewFlagSet("keys", flag.ContinueOnError)
 	project := flags.String("project", "", "project ID")
 	reveal := flags.Bool("show-secrets", false, "print client secrets to the terminal")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	credentials, err := installer.Credentials(*project, *reveal)
@@ -319,7 +339,7 @@ func advancedProject(args []string) error {
 	flags := flag.NewFlagSet("advanced", flag.ContinueOnError)
 	project := flags.String("project", "", "project ID")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	return installer.DefaultManager().Advanced(context.Background(), *project, *routerConfig)
@@ -329,7 +349,7 @@ func manageService(args []string) error {
 	flags := flag.NewFlagSet("service", flag.ContinueOnError)
 	project := flags.String("project", "", "project ID")
 	action := flags.String("action", "restart", "start, stop, or restart")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	return installer.DefaultManager().Service(context.Background(), *project, *action)
