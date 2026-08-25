@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TaJirax/CottenRouter/internal/config"
 )
@@ -191,9 +193,15 @@ func TestProtectedFirewallShimBlocksMutationAndDelegatesInspection(t *testing.T)
 	if err := os.WriteFile(shim, []byte(protectedFirewallScript(real)), 0755); err != nil {
 		t.Fatal(err)
 	}
-	output, err := exec.Command(shim, "-t", "nat", "-D", "OUTPUT", "1").CombinedOutput()
+	output, err := exec.Command(shim, "-t", "nat", "-I", "OUTPUT", "1", "-j", "DROP").CombinedOutput()
 	if err != nil || strings.Contains(string(output), "delegated:") {
 		t.Fatalf("firewall mutation reached native tool: %v %s", err, output)
+	}
+	// A blocked delete has to fail: upstream installers loop until the rule is
+	// gone, and reporting success there never terminates.
+	output, err = exec.Command(shim, "-t", "nat", "-D", "OUTPUT", "1").CombinedOutput()
+	if err == nil || strings.Contains(string(output), "delegated:") {
+		t.Fatalf("blocked delete reported success or reached native tool: %v %s", err, output)
 	}
 	output, err = exec.Command(shim, "-t", "nat", "-S").CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "delegated:-t nat -S") {
@@ -239,7 +247,6 @@ func TestProtectedPersistentFirewallShimsBlockWrites(t *testing.T) {
 	}{
 		{name: "ufw", args: []string{"allow", "443/tcp"}},
 		{name: "firewall-cmd", args: []string{"--permanent", "--add-port=443/tcp"}},
-		{name: "iptables-save", args: nil},
 		{name: "iptables-restore", args: nil},
 	} {
 		shim := filepath.Join(dir, fixture.name)
@@ -273,5 +280,41 @@ func TestAtomicWriteRefusesSymlinkedParent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("symlink target was modified: %v", err)
+	}
+}
+
+// Upstream installers clear rules with a delete-until-gone loop. The shim has
+// to break it instead of spinning forever on a rule it refuses to remove.
+func TestProtectedFirewallShimTerminatesDeleteUntilGoneLoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shim")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-firewall")
+	// The real tool always reports the rule as present, as it would while the
+	// shim refuses every delete.
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "iptables")
+	if err := os.WriteFile(shim, []byte(protectedFirewallScript(real)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "loop.sh")
+	newline := "\n"
+	loop := "#!/bin/sh" + newline +
+		"while " + shim + " -C OUTPUT -p tcp --dport 53 -j REJECT 2>/dev/null; do" + newline +
+		shim + " -D OUTPUT -p tcp --dport 53 -j REJECT || break" + newline +
+		"done" + newline
+	if err := os.WriteFile(script, []byte(loop), 0755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, script).Run(); err != nil {
+		t.Fatalf("delete-until-gone loop failed: %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("delete-until-gone loop never terminated")
 	}
 }

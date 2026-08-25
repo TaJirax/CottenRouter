@@ -671,7 +671,10 @@ func (m Manager) runProtectedCommand(ctx context.Context, spec Spec, command str
 			return err
 		}
 	}
-	for _, tool := range []string{"ufw", "firewall-cmd", "iptables-save", "iptables-restore", "ip6tables-save", "ip6tables-restore", "netfilter-persistent"} {
+	// iptables-save and ip6tables-save only dump rules. Shimming them breaks
+	// `iptables-save > /etc/iptables/rules.v4`: the caller's own redirect
+	// truncates the persisted ruleset whatever the shim does.
+	for _, tool := range []string{"ufw", "firewall-cmd", "iptables-restore", "ip6tables-restore", "netfilter-persistent"} {
 		realTool, _ := exec.LookPath(tool)
 		if realTool == "" {
 			realTool = "/bin/false"
@@ -719,7 +722,17 @@ func (m Manager) runProtectedCommand(ctx context.Context, spec Spec, command str
 }
 
 func protectedFirewallScript(realTool string) string {
-	return "#!/bin/sh\ncase \"$1\" in add|delete|insert|flush) echo 'CottenRouter: native firewall mutation deferred to the router installer' >&2; exit 0 ;; esac\ncase \" $* \" in *\" -A \"*|*\" -I \"*|*\" -D \"*|*\" -R \"*|*\" -F \"*|*\" -X \"*|*\" -N \"*|*\" -P \"*) echo 'CottenRouter: native firewall mutation deferred to the router installer' >&2; exit 0 ;; esac\nexec " + strconv.Quote(realTool) + " \"$@\"\n"
+	// Blocked deletions must report failure: installers remove rules with
+	// `while tool -C ...; do tool -D ... || break; done`, and a blocked delete
+	// that claims success loops forever because the rule never disappears.
+	const deferred = `echo 'CottenRouter: native firewall mutation deferred to the router installer' >&2`
+	return `#!/bin/sh
+case "$1" in delete|flush) ` + deferred + `; exit 1 ;; esac
+case "$1" in add|insert) ` + deferred + `; exit 0 ;; esac
+case " $* " in *" -D "*|*" -F "*|*" -X "*) ` + deferred + `; exit 1 ;; esac
+case " $* " in *" -A "*|*" -I "*|*" -R "*|*" -N "*|*" -P "*) ` + deferred + `; exit 0 ;; esac
+exec ` + strconv.Quote(realTool) + ` "$@"
+`
 }
 
 func protectedPersistentFirewallScript(tool, realTool string) string {
