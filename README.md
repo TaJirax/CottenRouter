@@ -88,7 +88,7 @@ Install a specific release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.15
+  | sudo bash -s -- --version=v1.2.16
 ```
 
 Install the current development branch:
@@ -274,7 +274,7 @@ Pinning a version is useful for reproducible deployments or returning to a known
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.15
+  | sudo bash -s -- --version=v1.2.16
 ```
 
 Available versions are listed on the [Releases page](https://github.com/TaJirax/CottenRouter/releases).
