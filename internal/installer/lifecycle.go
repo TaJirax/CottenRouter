@@ -347,18 +347,18 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 		rollback()
 		return plan, err
 	}
-	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
+	if err := m.requireActive(ctx, "cottenrouter", "CottenRouter"); err != nil {
 		rollback()
-		return plan, fmt.Errorf("CottenRouter did not become active: %w", err)
+		return plan, err
 	}
 	if err := m.waitForRouterListeners(ctx, request.RouterConfig); err != nil {
 		rollback()
 		return plan, err
 	}
 	if spec.Kind != ConfigSlipGate {
-		if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", spec.Service}, "/", false); err != nil {
+		if err := m.requireActive(ctx, spec.Service, spec.Name); err != nil {
 			rollback()
-			return plan, fmt.Errorf("%s did not become active: %w", spec.Name, err)
+			return plan, err
 		}
 		if err := m.waitForPrivateListeners(ctx, spec, request, plan); err != nil {
 			rollback()
@@ -465,11 +465,11 @@ func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, pur
 		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
 		return err
 	}
-	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
+	if err := m.requireActive(ctx, "cottenrouter", "CottenRouter"); err != nil {
 		_ = atomicWrite(routerConfig, routerPrevious, 0644)
 		restoreManagedServices(states, m.Runner)
 		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
-		return fmt.Errorf("CottenRouter did not become active after detach: %w", err)
+		return fmt.Errorf("after detach: %w", err)
 	}
 	if err := m.waitForRouterListeners(ctx, routerConfig); err != nil {
 		_ = atomicWrite(routerConfig, routerPrevious, 0644)
@@ -672,8 +672,8 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
 		return fail(err)
 	}
-	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
-		return fail(fmt.Errorf("CottenRouter did not become active: %w", err))
+	if err := m.requireActive(ctx, "cottenrouter", "CottenRouter"); err != nil {
+		return fail(err)
 	}
 	if err := m.waitForRouterListeners(ctx, routerConfig); err != nil {
 		return fail(err)
@@ -683,8 +683,8 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 			return fail(err)
 		}
 	} else {
-		if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", spec.Service}, "/", false); err != nil {
-			return fail(fmt.Errorf("%s did not become active: %w", spec.Name, err))
+		if err := m.requireActive(ctx, spec.Service, spec.Name); err != nil {
+			return fail(err)
 		}
 		request, plan, err := privateListenerExpectation(spec, spec.ConfigPath)
 		if err != nil {

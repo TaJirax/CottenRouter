@@ -52,6 +52,38 @@ func (OSRunner) Run(ctx context.Context, name string, args []string, dir string,
 	return nil
 }
 
+// requireActive reports why a unit is not running. A bare "systemctl
+// is-active: exit status 3" left operators and their users with nothing to
+// act on; the unit's own last log lines usually name the cause (a missing
+// credential, a port already in use, a bad setting).
+func (m Manager) requireActive(ctx context.Context, service, name string) error {
+	if m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", service}, "/", false) == nil {
+		return nil
+	}
+	state, _ := m.Runner.Output(context.Background(), "systemctl", "is-active", service)
+	return errors.New(fmt.Sprintf("%s did not become active (state: %s)", name, strings.TrimSpace(string(state))) + m.serviceLogTail(service))
+}
+
+// serviceLogTail returns the unit's own last output lines, formatted to append
+// to an error. systemd's lines about the unit ("Main process exited",
+// "Scheduled restart job", "Started ...") follow every crash and would push
+// the program's actual error out of a short tail, so they are dropped.
+func (m Manager) serviceLogTail(service string) string {
+	logs, _ := m.Runner.Output(context.Background(), "journalctl", "-u", service, "-n", "40", "--no-pager", "-o", "cat")
+	var kept []string
+	for line := range strings.SplitSeq(string(logs), "\n") {
+		line = strings.TrimSpace(line)
+		// A crash loop repeats the same error; keep one copy of each run.
+		if line != "" && !strings.Contains(line, service+".service") && (len(kept) == 0 || kept[len(kept)-1] != line) {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return "; last log lines: " + lastLines(strings.Join(kept, "\n"), 3)
+}
+
 func lastLines(text string, n int) string {
 	lines := strings.Split(text, "\n")
 	if len(lines) > n {
@@ -385,8 +417,8 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	if err := m.Runner.Run(ctx, "systemctl", []string{"restart", "cottenrouter"}, "/", false); err != nil {
 		return plan, err
 	}
-	if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", "cottenrouter"}, "/", false); err != nil {
-		return plan, fmt.Errorf("CottenRouter did not become active: %w", err)
+	if err := m.requireActive(ctx, "cottenrouter", "CottenRouter"); err != nil {
+		return plan, err
 	}
 	if err := m.waitForRouterListeners(ctx, request.RouterConfig); err != nil {
 		return plan, err
@@ -396,8 +428,8 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 			return plan, err
 		}
 	} else {
-		if err := m.Runner.Run(ctx, "systemctl", []string{"is-active", "--quiet", spec.Service}, "/", false); err != nil {
-			return plan, fmt.Errorf("%s did not become active: %w", spec.Name, err)
+		if err := m.requireActive(ctx, spec.Service, spec.Name); err != nil {
+			return plan, err
 		}
 		if err := m.waitForPrivateListeners(ctx, spec, request, plan); err != nil {
 			return plan, err
@@ -592,7 +624,9 @@ func (m Manager) waitForPrivateListeners(ctx context.Context, spec Spec, request
 			return nil
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%s did not expose all required loopback listeners: %v", spec.Name, lastMissing)
+			// A backend that crashes right after start still counts as active
+			// between systemd's restarts, so its log is the only real clue here.
+			return fmt.Errorf("%s did not expose all required loopback listeners: %v%s", spec.Name, lastMissing, m.serviceLogTail(spec.Service))
 		}
 		select {
 		case <-ctx.Done():

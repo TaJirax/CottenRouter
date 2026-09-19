@@ -403,3 +403,36 @@ func TestStormDNSOutboundTCP53BlockIsRemoved(t *testing.T) {
 		t.Fatalf("expected both copies removed, left %d after %d deletes", runner.copies, runner.deletes)
 	}
 }
+
+// failedUnitRunner models a backend that exits right after start, the way
+// thefeed does when its Telegram credentials are missing.
+type failedUnitRunner struct{}
+
+func (failedUnitRunner) Run(_ context.Context, name string, args []string, _ string, _ bool) error {
+	return errors.New("exit status 3")
+}
+
+func (failedUnitRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	if name == "journalctl" {
+		// The real error is followed by systemd's own crash and restart lines.
+		return []byte("Starting thefeed server v0.38.0\nError: --api-id, --api-hash, and --phone are required (use --no-telegram to skip)\n" +
+			"thefeed-server.service: Main process exited, code=exited, status=1/FAILURE\nthefeed-server.service: Failed with result 'exit-code'.\n" +
+			"thefeed-server.service: Scheduled restart job, restart counter is at 3.\nStarted thefeed-server.service - thefeed DNS-based Telegram Feed Server.\n"), nil
+	}
+	return []byte("activating\n"), errors.New("exit status 3")
+}
+
+func TestInactiveBackendErrorNamesTheCause(t *testing.T) {
+	err := (Manager{Runner: failedUnitRunner{}}).requireActive(context.Background(), "thefeed-server", "thefeed")
+	if err == nil {
+		t.Fatal("inactive unit reported as active")
+	}
+	for _, want := range []string{"thefeed did not become active", "state: activating", "--api-id, --api-hash, and --phone are required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q is missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("error must stay on one line for the TUI notice: %q", err)
+	}
+}
