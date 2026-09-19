@@ -146,3 +146,19 @@ func TestSecretRevealWarnsAboutTerminalScrollback(t *testing.T) {
 		t.Fatalf("secret warning is incomplete: cmd=%v confirm=%q notice=%q", cmd != nil, got.confirm, got.notice)
 	}
 }
+
+func TestSlipGateStatusFollowsItsTunnelsNotItsDisabledDNSRouter(t *testing.T) {
+	running := "slipgate-dnsrouter.service loaded inactive dead SlipGate DNS Router\n" +
+		"slipgate-dnstt-socks.service loaded active running SlipGate tunnel\n" +
+		"slipgate-vaydns-ssh.service loaded active running SlipGate tunnel\n"
+	if got := slipGateTunnelState(running); got != "active" {
+		t.Fatalf("running tunnels reported as %q", got)
+	}
+	crashed := "slipgate-dnsrouter.service loaded inactive dead x\nslipgate-dnstt-socks.service loaded failed failed x\n"
+	if got := slipGateTunnelState(crashed); got != "failed" {
+		t.Fatalf("failed tunnel reported as %q", got)
+	}
+	if got := slipGateTunnelState("slipgate-dnsrouter.service loaded inactive dead x\n"); got != "" {
+		t.Fatalf("DNS router alone should not count as a tunnel, got %q", got)
+	}
+}

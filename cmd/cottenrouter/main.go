@@ -56,6 +56,8 @@ func main() {
 		err = advancedProject(os.Args[2:])
 	case "service":
 		err = manageService(os.Args[2:])
+	case "repair":
+		err = repairHost(os.Args[2:])
 	case "healthz":
 		err = healthz(os.Args[2:])
 	case "version", "-v", "--version":
@@ -373,6 +375,20 @@ func manageService(args []string) error {
 	return installer.DefaultManager().Service(ctx, *project, *action)
 }
 
+func repairHost(args []string) error {
+	flags := flag.NewFlagSet("repair", flag.ContinueOnError)
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	ctx, stop := operationContext()
+	defer stop()
+	changes, err := installer.DefaultManager().Repair(ctx)
+	for _, change := range changes {
+		fmt.Println("  •", change)
+	}
+	return err
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|remove|uninstall|keys|check|catalog|slipgate-import|healthz|version> [options]")
+	fmt.Fprintln(os.Stderr, "Usage: cottenrouter <tui|serve|install|configure|advanced|service|repair|remove|uninstall|keys|check|catalog|slipgate-import|healthz|version> [options]")
 }

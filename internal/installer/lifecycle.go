@@ -274,6 +274,11 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 	if err := preflightRouterConfig(request.RouterConfig, spec, request, plan); err != nil {
 		return plan, err
 	}
+	if spec.ID == "thefeed" {
+		if err := requireTheFeedSource(filepath.Dir(spec.ConfigPath)); err != nil {
+			return plan, err
+		}
+	}
 	configured, err := configure(spec, request, plan, data)
 	if err != nil {
 		return plan, err

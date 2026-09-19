@@ -91,6 +91,32 @@ func tick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(value time.Time) tea.Msg { return tickMsg(value) })
 }
 
+// slipGateTunnelState summarizes `systemctl list-units slipgate-*` output
+// (UNIT LOAD ACTIVE SUB ...) across SlipGate's tunnel and proxy services.
+// Its DNS router and firewall-restore units are not tunnels. An empty result
+// means systemctl printed nothing, so the caller keeps the last known state.
+func slipGateTunnelState(units string) string {
+	active, failed, seen := false, false, false
+	for line := range strings.SplitSeq(units, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] == "slipgate-dnsrouter.service" || fields[0] == "slipgate-iptables.service" {
+			continue
+		}
+		seen = true
+		active = active || fields[2] == "active"
+		failed = failed || fields[2] == "failed"
+	}
+	switch {
+	case active:
+		return "active"
+	case failed:
+		return "failed"
+	case seen:
+		return "inactive"
+	}
+	return ""
+}
+
 func (m Model) refresh() tea.Cmd {
 	previous := make(map[string]string, len(m.services))
 	for _, service := range m.services {
@@ -115,17 +141,31 @@ func (m Model) refresh() tea.Cmd {
 		} else {
 			msg.err = err
 		}
-		serviceSpecs := []struct{ name, service string }{{"CottenRouter", "cottenrouter"}}
+		type serviceSpec struct {
+			name, service string
+			slipGate      bool
+		}
+		serviceSpecs := []serviceSpec{{name: "CottenRouter", service: "cottenrouter"}}
 		for _, spec := range installer.Specs() {
-			serviceSpecs = append(serviceSpecs, struct{ name, service string }{spec.Name, spec.Service})
+			serviceSpecs = append(serviceSpecs, serviceSpec{spec.Name, spec.Service, spec.Kind == installer.ConfigSlipGate})
 		}
 		for _, spec := range serviceSpecs {
 			serviceCtx, serviceCancel := probe()
-			// systemctl exits non-zero for inactive, failed, and unknown units but
-			// still names the state on stdout. Trust the word, not the exit code.
-			output, _ := exec.CommandContext(serviceCtx, "systemctl", "is-active", spec.service).Output()
+			var state string
+			if spec.slipGate {
+				// SlipGate's own DNS router is kept off on purpose (CottenRouter owns
+				// :53), so its unit said "inactive" while every tunnel was running.
+				output, err := exec.CommandContext(serviceCtx, "systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain", "slipgate-*.service").Output()
+				if state = slipGateTunnelState(string(output)); state == "" && err == nil {
+					state = "inactive" // SlipGate is not installed.
+				}
+			} else {
+				// systemctl exits non-zero for inactive, failed, and unknown units but
+				// still names the state on stdout. Trust the word, not the exit code.
+				output, _ := exec.CommandContext(serviceCtx, "systemctl", "is-active", spec.service).Output()
+				state = strings.TrimSpace(string(output))
+			}
 			serviceCancel()
-			state := strings.TrimSpace(string(output))
 			if state == "" {
 				// The probe itself failed. Keep the last known state rather than
 				// claiming a running service went offline.

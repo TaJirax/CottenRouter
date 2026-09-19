@@ -436,3 +436,62 @@ func TestInactiveBackendErrorNamesTheCause(t *testing.T) {
 		t.Fatalf("error must stay on one line for the TUI notice: %q", err)
 	}
 }
+
+func TestTheFeedWithoutAnySourceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// What thefeed's installer writes when the channel prompt is skipped.
+	write("channels.txt", "# Telegram channel usernames (one per line)\n# Lines starting with # are comments\n\n")
+	if err := requireTheFeedSource(dir); err == nil || !strings.Contains(err.Error(), "channels.txt") {
+		t.Fatalf("empty source lists were accepted: %v", err)
+	}
+	write("x_accounts.txt", "  someaccount  \n")
+	if err := requireTheFeedSource(dir); err != nil {
+		t.Fatalf("an X account alone should be enough: %v", err)
+	}
+}
+
+// repairRunner records commands and reports StormDNS's reject rule once.
+type repairRunner struct {
+	ruleChecks int
+	commands   []string
+}
+
+func (r *repairRunner) Run(_ context.Context, name string, args []string, _ string, _ bool) error {
+	r.commands = append(r.commands, name+" "+strings.Join(args, " "))
+	if name == "iptables" && args[0] == "-C" {
+		r.ruleChecks++
+		if r.ruleChecks <= 2 { // Repair's own probe, then the first cleanup check.
+			return nil
+		}
+		return errors.New("rule absent")
+	}
+	if name == "ip6tables" {
+		return errors.New("not installed")
+	}
+	return nil
+}
+
+func (r *repairRunner) Output(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+func TestRepairRemovesStormDNSBlock(t *testing.T) {
+	runner := &repairRunner{}
+	changes, err := (Manager{Runner: runner}).Repair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) == 0 || !strings.Contains(changes[0], "StormDNS") {
+		t.Fatalf("StormDNS block removal not reported: %v", changes)
+	}
+	deleted := false
+	for _, command := range runner.commands {
+		deleted = deleted || strings.HasPrefix(command, "iptables -D OUTPUT")
+	}
+	if !deleted {
+		t.Fatalf("reject rule was not deleted: %v", runner.commands)
+	}
+}

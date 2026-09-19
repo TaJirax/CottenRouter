@@ -653,6 +653,13 @@ if ! ${router_ready}; then
   fail "CottenRouter did not pass its health check within 30 seconds"
 fi
 
+# Upgrades apply host fixes too. They used to wait for the next backend
+# install or saved setting, which most operators never do after upgrading.
+# Older releases installed with --version have no repair command.
+if "${BIN_PATH}" repair -h >/dev/null 2>&1; then
+  "${BIN_PATH}" repair || printf 'Warning: some host fixes could not be applied; run: sudo cottenrouter repair\n' >&2
+fi
+
 # Prove the router itself holds its public UDP port, not just that the process
 # started. A DNS query cannot prove this: the bootstrap config drops every
 # unrouted name, so the old `dig localhost` probe warned on every fresh install.

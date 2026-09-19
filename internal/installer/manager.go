@@ -52,6 +52,24 @@ func (OSRunner) Run(ctx context.Context, name string, args []string, dir string,
 	return nil
 }
 
+// requireTheFeedSource refuses a thefeed setup with nothing to serve. Its
+// installer accepts an empty channel list, but thefeed-server then exits on
+// every start ("no channels configured") and systemd restarts it forever.
+func requireTheFeedSource(dataDir string) error {
+	for _, name := range []string{"channels.txt", "private_channels.txt", "x_accounts.txt"} {
+		data, err := os.ReadFile(filepath.Join(dataDir, name))
+		if err != nil {
+			continue
+		}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("thefeed needs at least one source and none is configured: add a public Telegram channel username (one per line) to %s, then run the install again", filepath.Join(dataDir, "channels.txt"))
+}
+
 // requireActive reports why a unit is not running. A bare "systemctl
 // is-active: exit status 3" left operators and their users with nothing to
 // act on; the unit's own last log lines usually name the cause (a missing
@@ -310,6 +328,11 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	installErr = m.runProtectedCommand(ctx, spec, "bash", []string{installerPath}, spec.WorkDir)
 	if installErr != nil {
 		return plan, fmt.Errorf("upstream %s installer failed: %w", spec.Name, installErr)
+	}
+	if spec.ID == "thefeed" {
+		if err := requireTheFeedSource(filepath.Dir(spec.ConfigPath)); err != nil {
+			return plan, err
+		}
 	}
 	if spec.Kind == ConfigSlipGate {
 		// The current upstream install.sh already runs `slipgate install`.
@@ -1053,6 +1076,49 @@ TasksMax=2048
 // connection on the host. That breaks the system resolver's TCP fallback and
 // every other backend that resolves over TCP (CottenDNS's own installer deletes
 // the same rule). Keep the unit from running again and remove what it added.
+// Repair applies host fixes that used to wait for the next install or saved
+// setting, which most operators never do after upgrading: StormDNS's
+// host-wide outbound TCP/53 block, and CottenDNS listeners that let clients
+// reach it over public IPv6 without the router. It changes only what is
+// wrong and returns a line per change. install.sh runs it on every upgrade.
+func (m Manager) Repair(ctx context.Context) ([]string, error) {
+	if m.Runner == nil {
+		m.Runner = OSRunner{}
+	}
+	var changes []string
+	if m.Runner.Run(ctx, "iptables", []string{"-C", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "REJECT", "--reject-with", "tcp-reset"}, "/", false) == nil {
+		changes = append(changes, "removed StormDNS's block on outgoing DNS-over-TCP")
+	}
+	if err := m.disableStormDNSEgressFilter(ctx); err != nil {
+		return changes, err
+	}
+	spec, _ := FindSpec("cottendns")
+	data, err := os.ReadFile(spec.ConfigPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return changes, nil
+	}
+	if err != nil {
+		return changes, err
+	}
+	fixed := data
+	if !strings.EqualFold(tomlValue(fixed, "UDP_IPV6_ENABLED"), "false") && tomlValue(fixed, "UDP_IPV6_HOST") != "::1" {
+		fixed = setTOML(fixed, "UDP_IPV6_HOST", "\"::1\"")
+	}
+	if strings.EqualFold(tomlValue(fixed, "TCP_IPV6_ENABLED"), "true") && tomlValue(fixed, "TCP_IPV6_HOST") != "::1" {
+		fixed = setTOML(fixed, "TCP_IPV6_HOST", "\"::1\"")
+	}
+	if bytes.Equal(fixed, data) {
+		return changes, nil
+	}
+	if err := atomicWrite(spec.ConfigPath, fixed, 0600); err != nil {
+		return changes, err
+	}
+	if err := m.Runner.Run(ctx, "systemctl", []string{"try-restart", spec.Service}, "/", false); err != nil {
+		return changes, fmt.Errorf("restart CottenDNS onto its loopback IPv6 listeners: %w", err)
+	}
+	return append(changes, "moved CottenDNS's IPv6 listeners back to loopback"), nil
+}
+
 func (m Manager) disableStormDNSEgressFilter(ctx context.Context) error {
 	const unit = "stormdns-egress-filter"
 	if _, err := os.Stat(filepath.Join("/etc/systemd/system", unit+".service")); err == nil {
