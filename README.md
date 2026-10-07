@@ -395,7 +395,7 @@ CottenRouter is designed to interoperate with these independent open-source proj
 
 | Project | Role in the ecosystem | Link |
 |---|---|---|
-| **CottenDNS** | DNS tunnel with UDP/TCP, DoT, DoH, ARQ, and MTU discovery | [Repository](https://github.com/TaJirax/CottenDns) |
+| **CottenDNS** | DNS tunnel with UDP/TCP, DoT, DoH, ARQ, and MTU discovery | [Repository](https://github.com/WhiteDNS/CottenDNS) |
 | **MasterDnsVPN** | DNS tunneling backend | [Repository](https://github.com/masterking32/MasterDnsVPN) |
 | **StormDNS** | DNS tunneling backend | [Repository](https://github.com/nullroute1970/StormDNS) |
 | **thefeed** | Feed, chat, media, and relay over DNS | [Repository](https://github.com/sartoopjj/thefeed) |

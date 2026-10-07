@@ -43,7 +43,7 @@ type Resolver struct {
 
 func Projects() []Project {
 	projects := []Project{
-		{ID: "cottendns", Name: "CottenDNS", RepoFullName: "TaJirax/CottenDns", InstallerPath: "server_linux_install.sh", CommandStyle: BashProcessSubstitution, Service: "cottendns", ListenSetting: "UDP_HOST=127.0.0.1, UDP_PORT=5301; TCP_LISTENER_ENABLED=true", DefaultBackend: "127.0.0.1:5301", Routable: true},
+		{ID: "cottendns", Name: "CottenDNS", RepoFullName: "WhiteDNS/CottenDNS", InstallerPath: "server_linux_install.sh", CommandStyle: BashProcessSubstitution, Service: "cottendns", ListenSetting: "UDP_HOST=127.0.0.1, UDP_PORT=5301; TCP_LISTENER_ENABLED=true", DefaultBackend: "127.0.0.1:5301", Routable: true},
 		{ID: "masterdnsvpn", Name: "MasterDnsVPN", RepoFullName: "masterking32/MasterDnsVPN", InstallerPath: "server_linux_install.sh", CommandStyle: BashProcessSubstitution, Service: "masterdnsvpn", ListenSetting: "UDP_HOST=127.0.0.1, UDP_PORT=5302", DefaultBackend: "127.0.0.1:5302", Routable: true},
 		{ID: "stormdns", Name: "StormDNS", RepoFullName: "nullroute1970/StormDNS", InstallerPath: "server_linux_install.sh", CommandStyle: BashProcessSubstitution, Service: "stormdns", ListenSetting: "UDP_HOST=127.0.0.1, UDP_PORT=5303", DefaultBackend: "127.0.0.1:5303", Routable: true},
 		{ID: "thefeed", Name: "thefeed", RepoFullName: "sartoopjj/thefeed", InstallerPath: "scripts/install.sh", CommandStyle: PipeToSudoBash, Service: "thefeed-server", ListenSetting: "THEFEED_LISTEN=127.0.0.1:5304", DefaultBackend: "127.0.0.1:5304", Routable: true},

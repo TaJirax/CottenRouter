@@ -41,6 +41,10 @@ suffixes are supported; the longest suffix wins.
   Router-front DoH therefore requires `TLS_CERT_FILE`/`TLS_KEY_FILE` until an
   upstream `ACME_EXTERNAL_PORT` setting is available. ACME is never claimed on
   an alternate public port.
+- CottenDNS domain rotation (`ADVERTISE_DOMAINS`) only advertises domains that
+  are also in `DOMAIN`. Add each standby domain as an extra domain first; that
+  puts it in `DOMAIN` and in the router's route. `ZONE_NS` needs nothing from
+  the router: apex NS queries already reach CottenDNS.
 - SlipGate NaiveProxy and StunTLS can use the same TLS passthrough. Give every
   SNI-routed service its own hostname and private loopback port. StunTLS has no
   domain field in SlipGate's native config, so its hostname is entered in the

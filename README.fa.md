@@ -382,7 +382,7 @@ CottenRouter برای کار در کنار پروژه‌های زیر ساخته
 
 | پروژه | نقش در اکوسیستم | لینک |
 |---|---|---|
-| **CottenDNS** | DNS tunnel با UDP/TCP، DoT، DoH، ARQ و MTU discovery | [مخزن](https://github.com/TaJirax/CottenDns) |
+| **CottenDNS** | DNS tunnel با UDP/TCP، DoT، DoH، ARQ و MTU discovery | [مخزن](https://github.com/WhiteDNS/CottenDNS) |
 | **MasterDnsVPN** | DNS tunneling backend | [مخزن](https://github.com/masterking32/MasterDnsVPN) |
 | **StormDNS** | DNS tunneling backend | [مخزن](https://github.com/nullroute1970/StormDNS) |
 | **thefeed** | feed، chat، media و relay روی DNS | [مخزن](https://github.com/sartoopjj/thefeed) |
