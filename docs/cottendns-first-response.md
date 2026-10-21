@@ -1,6 +1,13 @@
 # CottenDNS fills its cache but loses the first response
 
-Confirmed on 2026-10-19 in the local CottenDNS checkout and in the published
+Published update, 2026-10-21: the fix is included in the current
+[CottenDNS server and terminal-client release](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.140901-0a7a241),
+the [Desktop beta](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39601468697/artifacts/12346273079)
+and [Android beta](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39604706552/artifacts/12348436491).
+See the [release and update notes](cottendns-release-and-update-2026-10-21.md)
+for installation, compatibility and mode-switching instructions.
+
+The original defect was confirmed on 2026-10-19 in the local CottenDNS checkout and in the published
 WhiteDNS/CottenDNS `v2026.10.08.163633-1f3cc52` client source.
 
 `ProcessDNSQuery` previously dispatched cache misses without retaining the
@@ -31,9 +38,11 @@ git apply /path/to/CottenRouter/tests/integration/cottendns/patches/deliver-firs
 
 Build and distribute a corrected **CottenDNS client** to affected users.
 Upgrading only CottenRouter or the CottenDNS server cannot repair an already
-installed client. CottenRouter v1.2.19's backend updater still installs the
-published upstream server release; it does not distribute this client patch.
-No separate CottenDNS release has been published by this investigation.
+installed client. CottenRouter v1.2.21's backend updater independently installs
+the latest compatible published server, but users still need the corrected
+terminal client or Desktop/Android beta build. At the time of the original
+2026-10-19 investigation no separate release had been published; that historical
+status is superseded by the 2026-10-21 release above.
 
 Validation:
 
