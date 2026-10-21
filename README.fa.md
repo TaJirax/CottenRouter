@@ -40,6 +40,28 @@
 
 ---
 
+## پنل WhiteDNS و به‌روزرسانی مستقل
+
+گزینهٔ جداگانهٔ **WhiteDNS Panel** به Easy Install اضافه شده و آخرین انتشار پایدار `panel-v*` دارای بسته و checksum لینوکس amd64 را دریافت می‌کند. **Soar 2.2** همچنان نصب‌کنندهٔ قدیمی و هستهٔ Lantern v0.2.2 را نگه می‌دارد.
+
+برای پنل یک دامنهٔ واگذارشدهٔ کوتاه و جداگانه انتخاب کنید. زیر‌دامنه‌های حساب‌ها از همان مسیر UDP/TCP پنل عبور می‌کنند. پروفایل‌های پنل برای Soar و Cotten معمولی هستند؛ گزینهٔ مستقل CottenDNS حالت معمولی و CottenMax را با دامنه و کلید مشترک ارائه می‌کند.
+
+مسیر Cotten پنل از UDP و TCP برای DNS پشتیبانی می‌کند؛ مسیر Soar پنل در حال حاضر از UDP استفاده می‌کند.
+
+```bash
+sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp
+sudo cottenrouter update --project whitedns-panel
+sudo cottenrouter update --project cottendns
+```
+
+در نصب اول رمز مدیر در ترمینال پرسیده می‌شود. نصب خودکار می‌تواند `--panel-password-file` را با فایل خصوصی 0600 دریافت کند. به‌روزرسانی، پایگاه داده، کلید حساب‌ها، مصرف و سقف‌های انتخابی را حفظ می‌کند و در صورت خرابی سرویس به نسخهٔ قبلی بازمی‌گردد.
+
+صفحهٔ مدیریت فقط روی loopback، معمولاً `127.0.0.1:2054`، فعال است. اگر پورت اشغال باشد پورت آزاد انتخاب می‌شود. آدرس را با `sudo cottenrouter keys --project whitedns-panel` ببینید و با SSH forwarding باز کنید. نگهداری این نصب با Router است؛ به‌روزرسانی را با فرمان بالا انجام دهید. مدیریت حساب و دانلود پشتیبان در پنل فعال است، اما به‌روزرسان مستقلِ دارای دسترسی سیستمی و راه‌انداز HTTPS عمومی در نصب Router استفاده نمی‌شود.
+
+نسخهٔ زیرمجموعه‌ها در هر نصب یا به‌روزرسانی دوباره از انتشارهای فعلی دریافت می‌شود و به نسخهٔ Router وابسته نیست. انتشار جدید باید بررسی سازگاری و سلامت را بگذراند. در صورت خطای شبکه یا GitHub، نسخهٔ قدیمی به‌صورت پنهانی جایگزین نمی‌شود.
+
+سقف پیش‌فرض پنهان ۸ نشست وجود ندارد: پیش‌فرض CottenDNS و CottenMax مستقل ۲۰۴۸ نشست است و ظرفیت expanded آن را حداقل به ۴۰۹۶ می‌رساند. پیش‌فرض هستهٔ تعبیه‌شده و حساب جدید یا فاقد مقدار صریحِ پنل ۶۴ است؛ برای هر حساب تا ۴۰۹۶ قابل تنظیم است. محدودیت صریح قبلی مدیر حفظ می‌شود. این اعداد سقف نشست هستند و تضمین تعداد کاربر هم‌زمان نیستند.
+
 <a id="cottenmax-beta"></a>
 
 ## بتای CottenMax
@@ -50,8 +72,8 @@
 |---|---|
 | سورس Router و CottenDNS | تغییرات روی شاخه `main` در [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter)، [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) و [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) قرار دارند |
 | کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39601468697/artifacts/12346273079)، با انتخاب Normal / CottenMax |
-| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39601488139/artifacts/12346602282)، با انتخاب حالت در پروفایل |
-| نصب‌کننده‌های منتشرشده | [نسخه فعلی CottenDNS](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.123524-0f1d6f0) با پشتیبانی هم‌زمان Normal و Max نصب می‌شود |
+| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39604706552/artifacts/12348436491)، با انتخاب حالت در پروفایل |
+| نصب‌کننده‌های منتشرشده | [نسخه فعلی CottenDNS](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.140901-0a7a241) با پشتیبانی هم‌زمان Normal و Max نصب می‌شود |
 
 این artifactهای CI موقت هستند و ممکن است دریافت آن‌ها به ورود به حساب GitHub نیاز داشته باشد. **release جدیدی برای دسکتاپ یا اندروید منتشر نشده است.** هنگام آزمایش روی دستگاه واقعی، اینترنت موبایل و اتصال‌های طولانی، حالت Normal را برای بازگشت در دسترس نگه دارید.
 

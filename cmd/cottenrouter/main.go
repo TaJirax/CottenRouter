@@ -104,7 +104,7 @@ func parseFlags(flags *flag.FlagSet, args []string) error {
 
 func projectRequestFlags(name string, args []string) (installer.Request, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	project := flags.String("project", "", "project ID: cottendns, masterdnsvpn, stormdns, thefeed, slipgate, soar, soar22 (WhiteDNS older engine v0.2.2)")
+	project := flags.String("project", "", "project ID: cottendns, masterdnsvpn, stormdns, thefeed, slipgate, soar, soar22 (older engine), whitedns-panel (current account panel)")
 	domain := flags.String("domain", "", "primary delegated DNS domain")
 	port := flags.String("port", "0", "private loopback DNS port")
 	extra := flags.String("extra-domains", "", "additional DNS domains (unsupported by single-zone Soar)")
@@ -113,6 +113,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	dotEnabled := flags.Bool("dot", false, "enable CottenDNS DoT")
 	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
 	expandedCapacity := flags.Bool("expanded-capacity", false, "opt in to bounded higher CottenDNS/Max session and stream limits")
+	panelPasswordFile := flags.String("panel-password-file", "", "protected initial WhiteDNS Panel admin password file; omit for a hidden terminal prompt")
 	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
 	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
@@ -123,7 +124,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	if err != nil {
 		return installer.Request{}, fmt.Errorf("invalid --port: %w", err)
 	}
-	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig, ExpandedCapacity: *expandedCapacity}, nil
+	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig, ExpandedCapacity: *expandedCapacity, PanelPasswordFile: *panelPasswordFile}, nil
 }
 
 func serve(args []string) error {

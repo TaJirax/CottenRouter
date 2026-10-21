@@ -68,6 +68,16 @@ func Discover(routerConfig string) ([]ProjectState, error) {
 		if manifest, manifestErr := loadInstallManifestFile(spec.ID, manifestFile); manifestErr == nil {
 			state.Version = manifest.ReleaseTag
 		}
+		if spec.Kind == ConfigPanel {
+			if raw, err := os.ReadFile(filepath.Join(spec.WorkDir, "upstream.json")); err == nil {
+				var record struct {
+					Release string `json:"release_tag"`
+				}
+				if json.Unmarshal(raw, &record) == nil {
+					state.Version = record.Release
+				}
+			}
+		}
 		state.Integrated = integrated[spec.ID]
 		state.EnableTCP = spec.SupportsTCP && tcpEnabled[spec.ID]
 		if spec.ID == "cottendns" {
@@ -96,6 +106,11 @@ func Discover(routerConfig string) ([]ProjectState, error) {
 }
 
 func configSummary(spec Spec, data []byte) (domain, extra string, port int) {
+	if spec.Kind == ConfigPanel {
+		domain = envValue(data, "PANEL_ZONE")
+		_, _ = fmt.Sscanf(envValue(data, "PANEL_DNS_LISTEN"), "127.0.0.1:%d", &port)
+		return
+	}
 	if spec.Kind == ConfigSoar {
 		domain = envValue(data, "SOAR_ZONE")
 		_, _ = fmt.Sscanf(envValue(data, "SOAR_LISTEN"), "127.0.0.1:%d", &port)
@@ -166,6 +181,13 @@ func Credentials(projectID string, reveal bool) ([]Credential, error) {
 	}
 	var credentials []Credential
 	switch spec.Kind {
+	case ConfigPanel:
+		data, err := readSmallFile(spec.ConfigPath)
+		if err != nil {
+			return nil, err
+		}
+		listen := envValue(data, "PANEL_HTTP_LISTEN")
+		return []Credential{{Label: "Private panel URL (SSH forwarding required)", Path: spec.ConfigPath, Value: "http://" + listen}, {Label: "Administrator", Path: spec.ConfigPath, Value: envValue(data, "PANEL_ADMIN")}, {Label: "Account profiles", Path: filepath.Join(spec.WorkDir, "panel.db"), Value: "Sign in to the panel to create users and retrieve their client links"}}, nil
 	case ConfigSoar:
 		return soarCredentials(spec, reveal)
 	case ConfigTOML:
@@ -243,6 +265,9 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 		return PortPlan{}, err
 	}
 	if err := requireSoarUnitOwnership(spec); err != nil {
+		return PortPlan{}, err
+	}
+	if err := requirePanelOwnership(spec); err != nil {
 		return PortPlan{}, err
 	}
 	if spec.Kind == ConfigSlipGate {
@@ -415,6 +440,9 @@ func (m Manager) Remove(ctx context.Context, projectID, routerConfig string, pur
 	if err := requireSoarUnitOwnership(spec); err != nil {
 		return err
 	}
+	if err := requirePanelOwnership(spec); err != nil {
+		return err
+	}
 	if routerConfig == "" {
 		routerConfig = "/etc/cottenrouter/config.json"
 	}
@@ -557,6 +585,9 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 	if err := requireSoarUnitOwnership(spec); err != nil {
 		return err
 	}
+	if err := requirePanelOwnership(spec); err != nil {
+		return err
+	}
 	if routerConfig == "" {
 		routerConfig = "/etc/cottenrouter/config.json"
 	}
@@ -651,6 +682,15 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 		}
 		if err := m.Runner.Run(ctx, editor, []string{spec.ConfigPath}, spec.WorkDir, true); err != nil {
 			return err
+		}
+	}
+	if spec.Kind == ConfigPanel {
+		current, err := os.ReadFile(spec.ConfigPath)
+		if err != nil {
+			return fail(err)
+		}
+		if envValue(current, "PANEL_ZONE") != envValue(backendPrevious, "PANEL_ZONE") {
+			return fail(fmt.Errorf("preserve the panel base zone; changing it invalidates account profiles"))
 		}
 	}
 	if err := syncProjectRouteWithSlipGateTLS(routerConfig, spec, slipGateTLSPlan, previousSlipGateTLSPlan); err != nil {
@@ -789,6 +829,11 @@ func syncProjectRouteInternal(path string, spec Spec, currentSlipGateTLS, previo
 		}
 		if spec.Kind == ConfigSoar {
 			if err := validateSoarConfig(backendData); err != nil {
+				return err
+			}
+		}
+		if spec.Kind == ConfigPanel {
+			if err := validatePanelConfig(backendData); err != nil {
 				return err
 			}
 		}
@@ -957,6 +1002,9 @@ func (m Manager) Service(ctx context.Context, projectID, action string) error {
 		return err
 	}
 	if err := requireSoarUnitOwnership(spec); err != nil {
+		return err
+	}
+	if err := requirePanelOwnership(spec); err != nil {
 		return err
 	}
 	if action != "start" && action != "stop" && action != "restart" {

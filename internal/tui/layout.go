@@ -197,6 +197,9 @@ func (m Model) installView(width int) string {
 	if spec.ID == "cottendns" {
 		rows = append(rows, cottenMaxGuidance(width-4)...)
 	}
+	if spec.Kind == installer.ConfigPanel {
+		rows = append(rows, "Current stable WhiteDNS account panel; separate from Soar 2.2.", "UDP/TCP DNS stays private. Open the panel with SSH forwarding.", "Choose the admin password in the terminal on first install.", "Updates preserve users, keys, quotas and explicit limits.")
+	}
 	if version := m.projectStates[spec.ID].Version; version != "" {
 		rows = append(rows, fitLine("Installed release: "+version, width-4))
 	}
@@ -281,10 +284,11 @@ func (m Model) guideView(width int) string {
 	rows := []string{title.Render("EASY INSTALL"), "", "1. Install tab: Space selects; i starts the guided queue.", "2. Enter a unique delegated domain for each project.", "3. Tab moves fields; Enter on the last field installs.", "4. Native setup asks for project-specific options.", ""}
 	rows = append(rows, cottenMaxGuidance(width-4)...)
 	for _, line := range []string{
-		"Latest published builds may not include Max yet.",
+		"Current CottenDNS releases support Normal and Max together.",
 		"thefeed needs a source; SlipGate uses its native wizard.",
 		"Soar and Soar 2.2 need different zones.",
 		"Soar 2.2: WhiteDNS, older Lantern v0.2.2, amd64.",
+		"WhiteDNS Panel: current stable account panel, updated independently.",
 		"DNS: suffix routing. DoT/DoH: TLS SNI.",
 		"Existing panels keep ports; conflicts are reported.",
 	} {

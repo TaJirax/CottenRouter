@@ -514,7 +514,7 @@ func (m *Model) beginForm(operation string) {
 	if spec.Kind != installer.ConfigSlipGate {
 		m.fields = append(m.fields, newField("domain", "Tunnel domain", domain))
 		m.fields[len(m.fields)-1].input.Placeholder = spec.ID + ".example.com"
-		if spec.Kind != installer.ConfigSoar {
+		if spec.Kind != installer.ConfigSoar && spec.Kind != installer.ConfigPanel {
 			m.fields = append(m.fields, newField("extra", "Additional DNS domains (comma separated)", state.ExtraDomains))
 		}
 	}

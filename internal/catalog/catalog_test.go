@@ -16,7 +16,10 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 
 func TestLatestUsesCurrentDefaultBranchesAndVerifiesInstallers(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Method == http.MethodGet && (strings.HasSuffix(request.URL.Path, "/commits/stable") || strings.HasSuffix(request.URL.Path, "/commits/v0.1.3")) {
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/releases") {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"tag_name":"panel-v0.5.1","assets":[{"name":"soar-panel-0.5.1-linux-amd64.tar.gz"},{"name":"soar-panel-0.5.1-linux-amd64.tar.gz.sha256"}]}]`)), Header: make(http.Header)}, nil
+		}
+		if request.Method == http.MethodGet && (strings.HasSuffix(request.URL.Path, "/commits/stable") || strings.HasSuffix(request.URL.Path, "/commits/v0.1.3") || strings.HasSuffix(request.URL.Path, "/commits/panel-v0.5.1")) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"sha":"0123456789abcdef0123456789abcdef01234567"}`)), Header: make(http.Header)}, nil
 		}
 		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/repos/") {
@@ -31,7 +34,7 @@ func TestLatestUsesCurrentDefaultBranchesAndVerifiesInstallers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projects) != 7 {
+	if len(projects) != 8 {
 		t.Fatalf("got %d projects", len(projects))
 	}
 	for _, project := range projects {

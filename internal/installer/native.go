@@ -176,7 +176,7 @@ func loadInstallManifestFile(projectID string, locate func(string) (string, erro
 }
 
 func (m Manager) runNativeUninstall(ctx context.Context, spec Spec) error {
-	if spec.Kind == ConfigSoar {
+	if spec.Kind == ConfigSoar || spec.Kind == ConfigPanel {
 		// Soar has no native uninstaller: its binary, key, config, and source
 		// record all live in WorkDir. Remove purges that directory and its unit.
 		return nil

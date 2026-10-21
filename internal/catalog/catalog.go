@@ -18,6 +18,7 @@ const (
 	PipeToSudoBash          CommandStyle = "pipe-to-sudo-bash"
 	SourceGo                CommandStyle = "go-source-build"
 	WhiteDNSSoarBundle      CommandStyle = "whitedns-soar-bundle"
+	WhiteDNSPanelBundle     CommandStyle = "whitedns-panel-bundle"
 )
 
 type Project struct {
@@ -54,6 +55,7 @@ func Projects() []Project {
 		{ID: "slipgate", Name: "SlipGate", RepoFullName: "anonvector/slipgate", InstallerPath: "install.sh", CommandStyle: PipeToSudoBash, Service: "slipgate-dnsrouter", ListenSetting: "Import /etc/slipgate/config.json; disable slipgate-dnsrouter", Routable: false},
 		{ID: "soar", Name: "Soar", RepoFullName: "getlantern/soar", InstallerPath: "go.mod", CommandStyle: SourceGo, Service: "soar-server", ListenSetting: "SOAR_LISTEN=127.0.0.1:5305 (UDP only)", DefaultBackend: "127.0.0.1:5305", Routable: true},
 		{ID: "soar22", Name: "Soar 2.2", RepoFullName: "WhiteDNS/Soar-Server", InstallerPath: "setup.sh", PinnedRef: "v0.1.3", CommandStyle: WhiteDNSSoarBundle, Service: "soar22-server", ListenSetting: "WhiteDNS older engine v0.2.2; SOAR_LISTEN=127.0.0.1:5306 (UDP only, amd64 bundle)", DefaultBackend: "127.0.0.1:5306", Routable: true},
+		{ID: "whitedns-panel", Name: "WhiteDNS Panel", RepoFullName: "WhiteDNS/Soar-Server", InstallerPath: "panel-setup.sh", CommandStyle: WhiteDNSPanelBundle, Service: "whitedns-panel", ListenSetting: "Current stable panel; private UDP/TCP DNS :5307 and loopback administration", DefaultBackend: "127.0.0.1:5307", Routable: true},
 	}
 	for i := range projects {
 		ref := "main"
@@ -118,6 +120,9 @@ func (r Resolver) resolve(ctx context.Context, project Project) (Project, error)
 	branch, err := r.defaultBranch(ctx, project.RepoFullName)
 	if err != nil {
 		return Project{}, err
+	}
+	if project.ID == "whitedns-panel" {
+		return r.resolvePanel(ctx, project, branch)
 	}
 	ref := branch
 	if project.PinnedRef != "" {
@@ -215,7 +220,7 @@ func applyRef(project *Project, branch, ref, rawBase string) {
 	project.Repository = "https://github.com/" + project.RepoFullName
 	project.InstallerURL = strings.TrimRight(rawBase, "/") + "/" + project.RepoFullName + "/" + ref + "/" + project.InstallerPath
 	switch project.CommandStyle {
-	case BashProcessSubstitution, WhiteDNSSoarBundle:
+	case BashProcessSubstitution, WhiteDNSSoarBundle, WhiteDNSPanelBundle:
 		project.InstallCommand = "bash <(curl -fsSL " + project.InstallerURL + ")"
 	case PipeToSudoBash:
 		project.InstallCommand = "curl -fsSL " + project.InstallerURL + " | sudo bash"

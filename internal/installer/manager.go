@@ -211,6 +211,9 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	if spec.Kind == ConfigSoar {
 		return plan, m.installSoar(ctx, spec, request, plan, project, progress)
 	}
+	if spec.Kind == ConfigPanel {
+		return plan, m.installPanel(ctx, spec, request, plan, project, progress)
+	}
 	for _, managedPath := range []string{spec.WorkDir, spec.ConfigPath, request.RouterConfig} {
 		if err := rejectSymlinkComponents(managedPath); err != nil {
 			return plan, err
@@ -1270,6 +1273,10 @@ func writeDropIn(service, contents string) error {
 }
 
 func (m Manager) download(ctx context.Context, url string) ([]byte, error) {
+	return m.downloadLimited(ctx, url, 8<<20)
+}
+
+func (m Manager) downloadLimited(ctx context.Context, url string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -1282,18 +1289,20 @@ func (m Manager) download(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > 8<<20 {
-		return nil, fmt.Errorf("download %s exceeds 8 MiB safety limit", url)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("download %s exceeds %d byte safety limit", url, limit)
 	}
 	return data, nil
 }
 
 func configure(spec Spec, request Request, plan PortPlan, data []byte) ([]byte, error) {
 	switch spec.Kind {
+	case ConfigPanel:
+		return configurePanel(request, data)
 	case ConfigSoar:
 		data = setEnv(data, "SOAR_ZONE", request.Domain)
 		data = setEnv(data, "SOAR_LISTEN", fmt.Sprintf("127.0.0.1:%d", request.PrivatePort))

@@ -52,7 +52,7 @@ func TestEasyInstallBuildsCorrectChildForEveryBackend(t *testing.T) {
 	}
 }
 
-func TestEasyInstallCompletesAllSevenSelectionsInOrder(t *testing.T) {
+func TestEasyInstallCompletesAllSelectionsInOrder(t *testing.T) {
 	m := New("", "")
 	m.tab = 1
 	for i := range m.projects {
@@ -60,11 +60,11 @@ func TestEasyInstallCompletesAllSevenSelectionsInOrder(t *testing.T) {
 	}
 	m.beginSelectedInstall()
 	for i, spec := range m.projects {
-		if m.cursor != i || m.batchStep != i+1 || m.batchTotal != 7 {
+		if m.cursor != i || m.batchStep != i+1 || m.batchTotal != len(m.projects) {
 			t.Fatalf("wrong queue step: cursor=%d step=%d total=%d", m.cursor, m.batchStep, m.batchTotal)
 		}
 		if spec.Kind != installer.ConfigSlipGate {
-			fillDomain(&m, spec.ID+".queue.example")
+			fillDomain(&m, fmt.Sprintf("t%d.queue.example", i))
 			if m.installCmd() == nil {
 				t.Fatal(m.formError)
 			}
@@ -75,7 +75,7 @@ func TestEasyInstallCompletesAllSevenSelectionsInOrder(t *testing.T) {
 			t.Fatalf("successful project was not recorded/deselected: %s", spec.ID)
 		}
 	}
-	if m.form || m.busy || len(m.queue) != 0 || len(m.completed) != 7 || !strings.Contains(m.notice, "Installed 7 projects") {
+	if m.form || m.busy || len(m.queue) != 0 || len(m.completed) != len(m.projects) || !strings.Contains(m.notice, fmt.Sprintf("Installed %d projects", len(m.projects))) {
 		t.Fatalf("queue didn't finish: %+v", m)
 	}
 }

@@ -16,6 +16,7 @@ const (
 	ConfigEnv      ConfigKind = "env"
 	ConfigSlipGate ConfigKind = "slipgate"
 	ConfigSoar     ConfigKind = "soar"
+	ConfigPanel    ConfigKind = "whitedns-panel"
 )
 
 type Spec struct {
@@ -34,6 +35,7 @@ func Specs() []Spec {
 		{ID: "slipgate", Name: "SlipGate", Service: "slipgate-dnsrouter", WorkDir: "/etc/slipgate", ConfigPath: "/etc/slipgate/config.json", Kind: ConfigSlipGate, DefaultPort: 5310},
 		{ID: "soar", Name: "Soar", Service: "soar-server", WorkDir: "/opt/cottenrouter/backends/soar", ConfigPath: "/opt/cottenrouter/backends/soar/soar.env", Kind: ConfigSoar, DefaultPort: 5305},
 		{ID: "soar22", Name: "Soar 2.2", Service: "soar22-server", WorkDir: "/opt/cottenrouter/backends/soar22", ConfigPath: "/opt/cottenrouter/backends/soar22/soar.env", Kind: ConfigSoar, DefaultPort: 5306},
+		{ID: "whitedns-panel", Name: "WhiteDNS Panel", Service: "whitedns-panel", WorkDir: "/opt/cottenrouter/backends/whitedns-panel", ConfigPath: "/opt/cottenrouter/backends/whitedns-panel/panel.env", Kind: ConfigPanel, DefaultPort: 5307, SupportsTCP: true},
 	}
 }
 
@@ -71,6 +73,7 @@ type Request struct {
 	DoTDomain, DoHDomain                         string
 	RouterConfig                                 string
 	ExpandedCapacity                             bool
+	PanelPasswordFile                            string
 }
 
 func (r *Request) Validate() (Spec, error) {
@@ -108,6 +111,12 @@ func (r *Request) Validate() (Spec, error) {
 	}
 	if r.ExpandedCapacity && spec.ID != "cottendns" {
 		return Spec{}, fmt.Errorf("--expanded-capacity is available only for CottenDNS (normal and Max)")
+	}
+	if r.PanelPasswordFile != "" && spec.Kind != ConfigPanel {
+		return Spec{}, fmt.Errorf("--panel-password-file is available only for WhiteDNS Panel")
+	}
+	if spec.Kind == ConfigPanel && (len(r.Domain) > 24 || r.ExtraDomains != "" || r.ChatDomains != "") {
+		return Spec{}, fmt.Errorf("WhiteDNS Panel requires one delegated base zone of at most 24 characters; manage its accounts in the panel")
 	}
 	if spec.Kind == ConfigSoar && (r.ExtraDomains != "" || r.ChatDomains != "") {
 		return Spec{}, fmt.Errorf("Soar serves one delegated zone; extra and chat domains are not supported")

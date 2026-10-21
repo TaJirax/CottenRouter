@@ -44,6 +44,7 @@ flowchart LR
     R -->|Longest DNS suffix| D4[thefeed :5304]
     R -->|Longest DNS suffix, UDP| D6[Soar :5305]
     R -->|Longest DNS suffix, UDP| D7[Soar 2.2 :5306]
+    R -->|Longest DNS suffix, UDP/TCP| D8[WhiteDNS Panel :5307]
     R -->|DNS route or TLS SNI| D5[SlipGate services]
     R -.->|Loopback only| A[Admin API :9088]
 ```
@@ -61,6 +62,28 @@ flowchart LR
 
 ---
 
+## WhiteDNS Panel and independent updates
+
+**WhiteDNS Panel** is a separate Easy Install entry alongside **Soar** and **Soar 2.2**. It follows the newest published stable `panel-v*` release with a complete Linux amd64 bundle and checksum. Soar 2.2 keeps the older standalone installer and Lantern v0.2.2 engine.
+
+Use a separate, short delegated base zone for the Panel. Router forwards the whole base zone to its private UDP/TCP backend, so account subdomains work without adding individual Router routes. The Panel provides Soar and Normal Cotten account profiles; the standalone **CottenDNS** entry provides Normal and CottenMax with their existing shared domain/key.
+
+Panel Cotten supports UDP and TCP DNS transport. The Panel's Soar path currently uses UDP DNS.
+
+```bash
+sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp
+sudo cottenrouter update --project whitedns-panel
+sudo cottenrouter update --project cottendns
+```
+
+The first Panel install prompts for an administrator password. Automated installs can pass `--panel-password-file /path/to/protected-file` (0600). Updates preserve the database, account keys, usage and chosen session limits. Router verifies the archive and its internal checksums, checks the runtime version and capabilities, and restores the previous service/database if an upgrade is unhealthy.
+
+The administration page binds to loopback, normally `127.0.0.1:2054`; an occupied port is skipped. Run `sudo cottenrouter keys --project whitedns-panel` to find the selected address, then forward it, for example `ssh -L 2054:127.0.0.1:2054 root@SERVER`. Router owns maintenance for this installation: update it with the Router command above. Account management and backup downloads remain in the Panel; its standalone privileged updater and public HTTPS wizard are unavailable in Router mode.
+
+Backend updates resolve current upstream releases on every operation, independently of Router's own version. A future backend release must pass the compatibility and health checks before it replaces the working installation. Check GitHub/network errors if release discovery fails; it will not silently install a stale bundled version.
+
+There is no hidden eight-session default: standalone CottenDNS and CottenMax default to 2,048 sessions; expanded capacity raises this to at least 4,096. The embedded Cotten runtime and new/implicit Panel account defaults are 64, configurable per account up to 4,096. Existing explicit administrator limits are preserved. Limits count sessions, not guaranteed concurrent users, and should fit the server's resources.
+
 <a id="cottenmax-beta"></a>
 
 ## CottenMax beta
@@ -71,8 +94,8 @@ flowchart LR
 |---|---|
 | Router and CottenDNS source | Changes are on `main`: [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter), [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) and [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) |
 | Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39601468697/artifacts/12346273079), with Normal / CottenMax selection |
-| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39601488139/artifacts/12346602282), with profile mode selection |
-| Published installers | Install the [current CottenDNS release](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.123524-0f1d6f0), supporting Normal and Max together |
+| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39604706552/artifacts/12348436491), with profile mode selection |
+| Published installers | Install the [current CottenDNS release](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.140901-0a7a241), supporting Normal and Max together |
 
 These CI artifacts are temporary and may require a GitHub sign-in. **No new Desktop or Android release was published.** Keep Normal mode available as a fallback while testing real devices, mobile networks and long-running connections.
 
