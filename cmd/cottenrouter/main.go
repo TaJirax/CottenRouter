@@ -112,6 +112,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	tcpEnabled := flags.Bool("tcp", false, "enable backend DNS-over-TCP")
 	dotEnabled := flags.Bool("dot", false, "enable CottenDNS DoT")
 	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
+	expandedCapacity := flags.Bool("expanded-capacity", false, "opt in to bounded higher CottenDNS/Max session and stream limits")
 	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
 	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
@@ -122,7 +123,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	if err != nil {
 		return installer.Request{}, fmt.Errorf("invalid --port: %w", err)
 	}
-	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig}, nil
+	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig, ExpandedCapacity: *expandedCapacity}, nil
 }
 
 func serve(args []string) error {

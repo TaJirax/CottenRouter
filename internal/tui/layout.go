@@ -220,7 +220,7 @@ func (m Model) formView(width int) string {
 		heading += fmt.Sprintf(" · %d/%d", m.batchStep, m.batchTotal)
 	}
 	rows := []string{title.Render(heading), "Use your delegated domain. Private ports are planned automatically.", ""}
-	labels := map[string]string{"domain": "Tunnel domain", "extra": "Extra domains", "port": "Private port", "chat": "Chat domains", "dot": "DoT hostname", "doh": "DoH hostname"}
+	labels := map[string]string{"domain": "Tunnel domain", "extra": "Extra domains", "port": "Private port", "capacity": "Capacity", "chat": "Chat domains", "dot": "DoT hostname", "doh": "DoH hostname"}
 	for i, item := range m.fields {
 		label := fmt.Sprintf("%-14s", labels[item.key])
 		if i == m.fieldIndex {
@@ -300,6 +300,7 @@ func cottenMaxGuidance(width int) []string {
 	for _, line := range []string{
 		"Normal + CottenMax beta share the domain/key.",
 		"Max: compatible beta server; client selects mode.",
+		"Capacity: keep existing, or opt in to expanded sessions.",
 	} {
 		rows = append(rows, wrapped(line, width)...)
 	}

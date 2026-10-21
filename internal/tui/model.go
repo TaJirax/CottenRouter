@@ -519,6 +519,9 @@ func (m *Model) beginForm(operation string) {
 		}
 	}
 	m.fields = append(m.fields, newField("port", "Private DNS port", strconv.Itoa(port)))
+	if spec.ID == "cottendns" {
+		m.fields = append(m.fields, newField("capacity", "Session capacity (keep / expanded)", "keep"))
+	}
 	if spec.ID == "thefeed" {
 		m.fields = append(m.fields, newField("chat", "Chat domains (comma separated)", state.ChatDomains))
 	}
@@ -607,6 +610,15 @@ func (m Model) formRequest() (installer.Request, error) {
 	request := installer.Request{ProjectID: spec.ID, Domain: strings.TrimSpace(values["domain"]), PrivatePort: port,
 		ExtraDomains: strings.TrimSpace(values["extra"]), ChatDomains: strings.TrimSpace(values["chat"]), RouterConfig: m.routerConfig,
 		EnableTCP: m.enableTCP, EnableDoT: m.enableDoT, EnableDoH: m.enableDoH, DoTDomain: strings.TrimSpace(values["dot"]), DoHDomain: strings.TrimSpace(values["doh"])}
+	if spec.ID == "cottendns" {
+		switch strings.ToLower(strings.TrimSpace(values["capacity"])) {
+		case "", "keep":
+		case "expanded":
+			request.ExpandedCapacity = true
+		default:
+			return installer.Request{}, fmt.Errorf("session capacity must be keep or expanded")
+		}
+	}
 	_, err = request.Validate()
 	if err == nil {
 		zones := request.Domain + "," + request.ExtraDomains + "," + request.ChatDomains
@@ -660,6 +672,9 @@ func (m Model) installCommand() (*exec.Cmd, error) {
 		operation = "install"
 	}
 	args := []string{operation, "--project", request.ProjectID, "--domain", request.Domain, "--port", strconv.Itoa(request.PrivatePort), "--router-config", request.RouterConfig}
+	if request.ExpandedCapacity {
+		args = append(args, "--expanded-capacity")
+	}
 	if request.ExtraDomains != "" {
 		args = append(args, "--extra-domains", request.ExtraDomains)
 	}
@@ -685,6 +700,9 @@ func (m *Model) installCmd() tea.Cmd {
 		key := "domain"
 		if strings.Contains(m.formError, "port") {
 			key = "port"
+		}
+		if strings.Contains(m.formError, "capacity") {
+			key = "capacity"
 		}
 		if strings.Contains(m.formError, "DoT") {
 			key = "dot"

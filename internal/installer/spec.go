@@ -70,6 +70,7 @@ type Request struct {
 	EnableTCP, EnableDoT, EnableDoH              bool
 	DoTDomain, DoHDomain                         string
 	RouterConfig                                 string
+	ExpandedCapacity                             bool
 }
 
 func (r *Request) Validate() (Spec, error) {
@@ -104,6 +105,9 @@ func (r *Request) Validate() (Spec, error) {
 	}
 	if r.RouterConfig == "" {
 		r.RouterConfig = "/etc/cottenrouter/config.json"
+	}
+	if r.ExpandedCapacity && spec.ID != "cottendns" {
+		return Spec{}, fmt.Errorf("--expanded-capacity is available only for CottenDNS (normal and Max)")
 	}
 	if spec.Kind == ConfigSoar && (r.ExtraDomains != "" || r.ChatDomains != "") {
 		return Spec{}, fmt.Errorf("Soar serves one delegated zone; extra and chat domains are not supported")

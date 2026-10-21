@@ -69,7 +69,7 @@ flowchart LR
 
 | Component | Beta availability |
 |---|---|
-| Router and CottenDNS source | Changes are on `main`: [WhiteDNS/CottenRouter](https://github.com/WhiteDNS/CottenRouter), [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter), [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) and [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) |
+| Router and CottenDNS source | Changes are on `main`: [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter), [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) and [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) |
 | Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39582214192/artifacts/12338600003), with Normal / CottenMax selection |
 | Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39582513479/artifacts/12339120389), with profile mode selection |
 | Published installers | Still download the latest **published release**; a push to `main` does not publish a beta binary |
@@ -77,6 +77,8 @@ flowchart LR
 These CI artifacts are temporary and may require a GitHub sign-in. **No new Desktop or Android release was published.** Keep Normal mode available as a fallback while testing real devices, mobile networks and long-running connections.
 
 The updated Max clients support UDP and TCP DNS for live tunnel traffic. Auto probes both paths independently during resolver discovery and authenticated MTU scanning, then carries traffic over usable paths. The existing local device proxy and Router route stay the same; see the [UDP/TCP transport and scan guide](https://github.com/WhiteDNS/CottenDNS/blob/main/docs/COTTENMAX_OPTIONS.md#udptcp-connections-and-authenticated-mtu-scans).
+
+For more session headroom, choose **expanded** in the CottenDNS form's **Capacity** field, or pass `--expanded-capacity` to its install/configure command. This opts in to at least **4096 server sessions**, **1024 normal streams/session**, and **512 Max streams/session**; higher custom values are preserved. Max's higher cap requires updated server and clients. **keep** preserves current values. Rate and byte limits stay in force. These are configured ceilings, not a guaranteed user count; see [capacity and limits](https://github.com/WhiteDNS/CottenDNS/blob/main/docs/COTTENMAX_OPTIONS.md#session-and-per-client-capacity).
 
 To test the updated Router UI, use `--channel=edge` or `--local-source` as shown below. These options update **Router only**: its CottenDNS install/update action still fetches the latest published CottenDNS release. For Max, first install a compatible beta CottenDNS server from source using the [CottenDNS beta guide](https://github.com/WhiteDNS/CottenDNS#cottenmax-beta).
 

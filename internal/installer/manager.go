@@ -1322,6 +1322,24 @@ func configure(spec Spec, request Request, plan PortPlan, data []byte) ([]byte, 
 			} {
 				data = seedTOML(data, key, value)
 			}
+			if request.ExpandedCapacity {
+				// Explicit opt-in: bounded session/stream headroom, with existing
+				// higher operator limits preserved. Rate/byte/queue budgets stay intact.
+				for key, floor := range map[string]int{
+					"MAX_ACTIVE_SESSIONS": 4096, "MAX_STREAMS_PER_SESSION": 1024,
+					"COTTENMAX_MAX_STREAMS": 512, "TCP_MAX_CONNS": 1024,
+					"TCP_MAX_CONNS_PER_IP": 128,
+				} {
+					current := tomlValue(data, key)
+					value, err := strconv.Atoi(current)
+					if current != "" && err != nil {
+						return nil, fmt.Errorf("expanded capacity requires an integer %s", key)
+					}
+					if value < floor {
+						data = setTOML(data, key, strconv.Itoa(floor))
+					}
+				}
+			}
 			// A newly adopted/public CottenDNS is moved to the requested 16 KiB
 			// ceiling once. Later common edits never overwrite advanced tuning.
 			if initialCottenProfile {
@@ -1564,6 +1582,10 @@ func buildRouterConfig(path string, spec Spec, request Request, plan PortPlan, c
 	}
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("generated router config: %w", err)
+	}
+	if spec.ID == "cottendns" && request.ExpandedCapacity {
+		cfg.MaxTCPConnections = max(cfg.MaxTCPConnections, 512)
+		cfg.Limits.MaxTCPConnectionsPerIP = max(cfg.Limits.MaxTCPConnectionsPerIP, 64)
 	}
 	if spec.Kind == ConfigSoar && cfg.QueryTimeoutMS < 2000 {
 		return cfg, fmt.Errorf("Soar requires router query_timeout_ms >= 2000 to support held DNS polls")
