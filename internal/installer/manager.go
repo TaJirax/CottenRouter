@@ -1328,7 +1328,7 @@ func configure(spec Spec, request Request, plan PortPlan, data []byte) ([]byte, 
 				for key, floor := range map[string]int{
 					"MAX_ACTIVE_SESSIONS": 4096, "MAX_STREAMS_PER_SESSION": 1024,
 					"COTTENMAX_MAX_STREAMS": 512, "TCP_MAX_CONNS": 1024,
-					"TCP_MAX_CONNS_PER_IP": 128,
+					"TCP_MAX_CONNS_PER_IP": 512,
 				} {
 					current := tomlValue(data, key)
 					value, err := strconv.Atoi(current)
