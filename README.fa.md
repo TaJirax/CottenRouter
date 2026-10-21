@@ -49,9 +49,9 @@
 | بخش | وضعیت بتا |
 |---|---|
 | سورس Router و CottenDNS | تغییرات روی شاخه `main` در [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter)، [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) و [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) قرار دارند |
-| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39590353595/artifacts/12341496106)، با انتخاب Normal / CottenMax |
-| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39590470110/artifacts/12342666245)، با انتخاب حالت در پروفایل |
-| نصب‌کننده‌های منتشرشده | همچنان آخرین **release منتشرشده** را دریافت می‌کنند؛ push به `main` به‌تنهایی باینری بتا منتشر نمی‌کند |
+| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39601468697/artifacts/12346273079)، با انتخاب Normal / CottenMax |
+| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39601488139/artifacts/12346602282)، با انتخاب حالت در پروفایل |
+| نصب‌کننده‌های منتشرشده | [نسخه فعلی CottenDNS](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.123524-0f1d6f0) با پشتیبانی هم‌زمان Normal و Max نصب می‌شود |
 
 این artifactهای CI موقت هستند و ممکن است دریافت آن‌ها به ورود به حساب GitHub نیاز داشته باشد. **release جدیدی برای دسکتاپ یا اندروید منتشر نشده است.** هنگام آزمایش روی دستگاه واقعی، اینترنت موبایل و اتصال‌های طولانی، حالت Normal را برای بازگشت در دسترس نگه دارید.
 
@@ -59,7 +59,7 @@
 
 برای افزایش ظرفیت نشست، در فیلد **Capacity** فرم CottenDNS گزینه **expanded** را وارد کنید یا به دستور نصب/تنظیم آن `--expanded-capacity` اضافه کنید. این انتخاب حداقل **۴۰۹۶ نشست سرور**، **۱۰۲۴ جریان معمولی در هر نشست** و **۵۱۲ جریان Max در هر نشست** را تنظیم می‌کند و مقادیر سفارشی بالاتر را حفظ می‌کند. سقف بالاتر Max به سرور و کلاینت به‌روز نیاز دارد. گزینه **keep** مقادیر فعلی را حفظ می‌کند. محدودیت نرخ و حجم داده برقرار می‌ماند. این اعداد سقف تنظیمات هستند، نه تضمین تعداد کاربر؛ [راهنمای ظرفیت و محدودیت‌ها](https://github.com/WhiteDNS/CottenDNS/blob/main/docs/COTTENMAX_OPTIONS.md#session-and-per-client-capacity) را ببینید.
 
-برای آزمایش رابط به‌روز Router از `--channel=edge` یا `--local-source` طبق دستورهای پایین استفاده کنید. این گزینه‌ها فقط **خود Router** را به‌روز می‌کنند؛ عملیات نصب/به‌روزرسانی CottenDNS در آن همچنان آخرین release منتشرشده CottenDNS را دریافت می‌کند. برای Max، ابتدا سرور بتای سازگار CottenDNS را طبق [راهنمای بتای CottenDNS](https://github.com/WhiteDNS/CottenDNS#cottenmax-beta) از سورس نصب کنید.
+برای رابط و بررسی نصب جدید، آخرین Router را نصب کنید. CottenDNS را از TUI یا با `sudo cottenrouter update --project cottendns` به‌روز کنید؛ نسخه پروژه مستقل از Router از آخرین Release دریافت می‌شود. اسکنر کلاینت مسیرهای UDP/TCP فعال در آزمایش و موفق را نشان می‌دهد و وضعیت اتصال Max پس از تأیید انتقال معتبر نمایش داده می‌شود.
 
 اگر بک‌اند از قبل زیر مدیریت Router است، هنگام جایگزینی باینری سرور، پوشه کاری سرویس، تنظیمات، کلید و پورت‌های خصوصی loopback آن را حفظ کنید. پورت عمومی `53` باید در اختیار CottenRouter بماند؛ بک‌اند را به این پورت منتقل نکنید. از همان مسیر CottenDNS استفاده کنید، سپس در کلاینت Max را انتخاب و دوباره متصل شوید. دامنه‌های بسیار طولانی حالت legacy ممکن است از محدودیت طول دامنه Max بیشتر باشند.
 
@@ -360,9 +360,7 @@ CottenRouter نیست. دامنه‌ها، کلیدها و تنظیمات مسی
 برای CottenDNS آخرین انتشار رسمی `WhiteDNS/CottenDNS` دریافت و نسخه باینری
 نصب‌شده بررسی می‌شود؛ خطای دریافت نسخه به نصب بی‌صدای نسخه قدیمی منجر نمی‌شود.
 
-این مسیر، release منتشرشده را نصب می‌کند. اگر بتای CottenMax را از سورس نصب
-کرده‌اید، برای حفظ پشتیبانی Max از [روش به‌روزرسانی بتا](https://github.com/WhiteDNS/CottenDNS#cottenmax-beta)
-استفاده کنید؛ به‌روزرسانی بک‌اند ممکن است باینری بتا را با آخرین release منتشرشده جایگزین کند.
+Release فعلی CottenDNS حالت Normal و Max را با هم دارد. تنظیمات و کلید سفارشی حفظ می‌شوند. اگر مدیر در drop-in مقدار `ExecStart` را تغییر داده است، پیش از نصب خودکار آن را بررسی کنید؛ نصب‌کننده این مورد را قبل از توقف سرویس گزارش می‌کند.
 
 ### بررسی نسخه
 

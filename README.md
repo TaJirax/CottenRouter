@@ -70,9 +70,9 @@ flowchart LR
 | Component | Beta availability |
 |---|---|
 | Router and CottenDNS source | Changes are on `main`: [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter), [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) and [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) |
-| Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39590353595/artifacts/12341496106), with Normal / CottenMax selection |
-| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39590470110/artifacts/12342666245), with profile mode selection |
-| Published installers | Still download the latest **published release**; a push to `main` does not publish a beta binary |
+| Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39601468697/artifacts/12346273079), with Normal / CottenMax selection |
+| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39601488139/artifacts/12346602282), with profile mode selection |
+| Published installers | Install the [current CottenDNS release](https://github.com/WhiteDNS/CottenDNS/releases/tag/v2026.10.21.123524-0f1d6f0), supporting Normal and Max together |
 
 These CI artifacts are temporary and may require a GitHub sign-in. **No new Desktop or Android release was published.** Keep Normal mode available as a fallback while testing real devices, mobile networks and long-running connections.
 
@@ -80,7 +80,7 @@ The updated Max clients support UDP and TCP DNS for live tunnel traffic. Auto pr
 
 For more session headroom, choose **expanded** in the CottenDNS form's **Capacity** field, or pass `--expanded-capacity` to its install/configure command. This opts in to at least **4096 server sessions**, **1024 normal streams/session**, and **512 Max streams/session**; higher custom values are preserved. Max's higher cap requires updated server and clients. **keep** preserves current values. Rate and byte limits stay in force. These are configured ceilings, not a guaranteed user count; see [capacity and limits](https://github.com/WhiteDNS/CottenDNS/blob/main/docs/COTTENMAX_OPTIONS.md#session-and-per-client-capacity).
 
-To test the updated Router UI, use `--channel=edge` or `--local-source` as shown below. These options update **Router only**: its CottenDNS install/update action still fetches the latest published CottenDNS release. For Max, first install a compatible beta CottenDNS server from source using the [CottenDNS beta guide](https://github.com/WhiteDNS/CottenDNS#cottenmax-beta).
+Use the current Router release for the updated TUI and managed installer checks. Install or update the CottenDNS backend from the TUI or run `sudo cottenrouter update --project cottendns`; the operation independently resolves the latest published CottenDNS version. The app scanner shows live UDP/TCP paths, and Max connection state waits for authenticated transfer proof.
 
 For an existing Router-managed backend, preserve its service working directory, configuration, key and private loopback listener ports when replacing its server binary. CottenRouter must retain public port `53`; do not move the backend to that port. Reuse the existing CottenDNS route, then select Max in the client and reconnect. Very long legacy domains can exceed Max's domain limits.
 
