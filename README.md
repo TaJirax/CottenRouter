@@ -70,8 +70,8 @@ flowchart LR
 | Component | Beta availability |
 |---|---|
 | Router and CottenDNS source | Changes are on `main`: [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter), [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) and [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) |
-| Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39582214192/artifacts/12338600003), with Normal / CottenMax selection |
-| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39582513479/artifacts/12339120389), with profile mode selection |
+| Desktop client | [Windows debug build](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39590353595/artifacts/12341496106), with Normal / CottenMax selection |
+| Android client | [Debug APKs](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39590470110/artifacts/12342666245), with profile mode selection |
 | Published installers | Still download the latest **published release**; a push to `main` does not publish a beta binary |
 
 These CI artifacts are temporary and may require a GitHub sign-in. **No new Desktop or Android release was published.** Keep Normal mode available as a fallback while testing real devices, mobile networks and long-running connections.

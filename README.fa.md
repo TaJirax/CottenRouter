@@ -49,8 +49,8 @@
 | بخش | وضعیت بتا |
 |---|---|
 | سورس Router و CottenDNS | تغییرات روی شاخه `main` در [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter)، [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) و [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) قرار دارند |
-| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39582214192/artifacts/12338600003)، با انتخاب Normal / CottenMax |
-| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39582513479/artifacts/12339120389)، با انتخاب حالت در پروفایل |
+| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39590353595/artifacts/12341496106)، با انتخاب Normal / CottenMax |
+| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39590470110/artifacts/12342666245)، با انتخاب حالت در پروفایل |
 | نصب‌کننده‌های منتشرشده | همچنان آخرین **release منتشرشده** را دریافت می‌کنند؛ push به `main` به‌تنهایی باینری بتا منتشر نمی‌کند |
 
 این artifactهای CI موقت هستند و ممکن است دریافت آن‌ها به ورود به حساب GitHub نیاز داشته باشد. **release جدیدی برای دسکتاپ یا اندروید منتشر نشده است.** هنگام آزمایش روی دستگاه واقعی، اینترنت موبایل و اتصال‌های طولانی، حالت Normal را برای بازگشت در دسترس نگه دارید.
