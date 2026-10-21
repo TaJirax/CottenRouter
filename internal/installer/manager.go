@@ -1335,6 +1335,9 @@ func configure(spec Spec, request Request, plan PortPlan, data []byte) ([]byte, 
 					if current != "" && err != nil {
 						return nil, fmt.Errorf("expanded capacity requires an integer %s", key)
 					}
+					if key == "TCP_MAX_CONNS_PER_IP" && current != "" && value == 0 {
+						continue // preserve an operator's existing unlimited per-IP setting
+					}
 					if value < floor {
 						data = setTOML(data, key, strconv.Itoa(floor))
 					}
