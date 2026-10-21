@@ -114,6 +114,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	dohEnabled := flags.Bool("doh", false, "enable CottenDNS DoH")
 	expandedCapacity := flags.Bool("expanded-capacity", false, "opt in to bounded higher CottenDNS/Max session and stream limits")
 	panelPasswordFile := flags.String("panel-password-file", "", "protected initial WhiteDNS Panel admin password file; omit for a hidden terminal prompt")
+	panelBetaBundle := flags.String("panel-beta-bundle", "", "explicitly install the tested Panel 0.5.1 beta from a downloaded CI tar.gz")
 	dotDomain := flags.String("dot-domain", "", "DoT SNI hostname")
 	dohDomain := flags.String("doh-domain", "", "DoH SNI hostname")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
@@ -124,7 +125,7 @@ func projectRequestFlags(name string, args []string) (installer.Request, error) 
 	if err != nil {
 		return installer.Request{}, fmt.Errorf("invalid --port: %w", err)
 	}
-	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig, ExpandedCapacity: *expandedCapacity, PanelPasswordFile: *panelPasswordFile}, nil
+	return installer.Request{ProjectID: *project, Domain: *domain, PrivatePort: privatePort, ExtraDomains: *extra, ChatDomains: *chat, EnableTCP: *tcpEnabled, EnableDoT: *dotEnabled, EnableDoH: *dohEnabled, DoTDomain: *dotDomain, DoHDomain: *dohDomain, RouterConfig: *routerConfig, ExpandedCapacity: *expandedCapacity, PanelPasswordFile: *panelPasswordFile, PanelBetaBundle: *panelBetaBundle}, nil
 }
 
 func serve(args []string) error {
@@ -325,12 +326,13 @@ func updateProject(args []string) error {
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	project := flags.String("project", "", "installed backend to update independently of CottenRouter")
 	routerConfig := flags.String("router-config", "/etc/cottenrouter/config.json", "router configuration path")
+	panelBetaBundle := flags.String("panel-beta-bundle", "", "explicitly use the tested Panel beta CI archive instead of stable releases")
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	ctx, stop := operationContext()
 	defer stop()
-	_, err := installer.DefaultManager().Update(ctx, *project, *routerConfig, func(message string) { fmt.Println("  •", message) })
+	_, err := installer.DefaultManager().UpdateWithPanelBetaBundle(ctx, *project, *routerConfig, *panelBetaBundle, func(message string) { fmt.Println("  •", message) })
 	return err
 }
 

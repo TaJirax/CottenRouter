@@ -197,7 +197,12 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 	}
 
 	progress("Resolving and verifying the current upstream installer")
-	project, err := catalog.DefaultResolver().LatestProject(ctx, request.ProjectID)
+	var project catalog.Project
+	if request.PanelBetaBundle != "" {
+		project = panelBetaProject()
+	} else {
+		project, err = catalog.DefaultResolver().LatestProject(ctx, request.ProjectID)
+	}
 	if err != nil {
 		return plan, err
 	}

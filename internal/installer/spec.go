@@ -74,6 +74,7 @@ type Request struct {
 	RouterConfig                                 string
 	ExpandedCapacity                             bool
 	PanelPasswordFile                            string
+	PanelBetaBundle                              string
 }
 
 func (r *Request) Validate() (Spec, error) {
@@ -114,6 +115,9 @@ func (r *Request) Validate() (Spec, error) {
 	}
 	if r.PanelPasswordFile != "" && spec.Kind != ConfigPanel {
 		return Spec{}, fmt.Errorf("--panel-password-file is available only for WhiteDNS Panel")
+	}
+	if r.PanelBetaBundle != "" && spec.Kind != ConfigPanel {
+		return Spec{}, fmt.Errorf("--panel-beta-bundle is available only for WhiteDNS Panel")
 	}
 	if spec.Kind == ConfigPanel && (len(r.Domain) > 24 || r.ExtraDomains != "" || r.ChatDomains != "") {
 		return Spec{}, fmt.Errorf("WhiteDNS Panel requires one delegated base zone of at most 24 characters; manage its accounts in the panel")

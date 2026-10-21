@@ -64,25 +64,28 @@ flowchart LR
 
 ## WhiteDNS Panel and independent updates
 
-**WhiteDNS Panel** is a separate Easy Install entry alongside **Soar** and **Soar 2.2**. It follows the newest published stable `panel-v*` release with a complete Linux amd64 bundle and checksum. Soar 2.2 keeps the older standalone installer and Lantern v0.2.2 engine.
+**WhiteDNS Panel** is a separate Easy Install entry alongside **Soar** and **Soar 2.2**. Soar 2.2 keeps the older standalone installer and Lantern v0.2.2 engine. Panel 0.5.1 remains **beta only**; WhiteDNS's stable branch and releases have not been changed by this beta work.
 
-Use a separate, short delegated base zone for the Panel. Router forwards the whole base zone to its private UDP/TCP backend, so account subdomains work without adding individual Router routes. The Panel provides Soar and Normal Cotten account profiles; the standalone **CottenDNS** entry provides Normal and CottenMax with their existing shared domain/key.
-
-Panel Cotten supports UDP and TCP DNS transport. The Panel's Soar path currently uses UDP DNS.
+For the tested Panel beta, download the [CI artifact](https://github.com/WhiteDNS/Soar-Server/actions/runs/39619905951/artifacts/12354244178), unzip it, and copy `soar-panel-0.5.1-linux-amd64.tar.gz` to the server. GitHub artifact downloads may require sign-in. Router requires the exact tested archive SHA-256 `59f64f2de6a5fbbc652bd93e0cd9e2ab4675816b9cbf27a1324f66eceab8f90b`; it refuses a different archive. Artifacts are temporary; if this one expires, keep the current installation until another verified beta or compatible stable release is available.
 
 ```bash
-sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp
-sudo cottenrouter update --project whitedns-panel
-sudo cottenrouter update --project cottendns
+sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp \
+  --panel-beta-bundle /root/soar-panel-0.5.1-linux-amd64.tar.gz
+sudo cottenrouter update --project whitedns-panel \
+  --panel-beta-bundle /root/soar-panel-0.5.1-linux-amd64.tar.gz
 ```
 
-The first Panel install prompts for an administrator password. Automated installs can pass `--panel-password-file /path/to/protected-file` (0600). Updates preserve the database, account keys, usage and chosen session limits. Router verifies the archive and its internal checksums, checks the runtime version and capabilities, and restores the previous service/database if an upgrade is unhealthy.
+The TUI's Panel form has a **Beta CI archive** path field for the same explicit choice. A blank field, or an update without `--panel-beta-bundle`, checks the newest published stable `panel-v*` release independently of Router updates. The older stable Panel lacks the required configurable session fixes and is refused before stopping the service. Future compatible stable releases will be selected automatically by those ordinary commands. Beta binaries are never silently selected or published as stable.
 
-The administration page binds to loopback, normally `127.0.0.1:2054`; an occupied port is skipped. Run `sudo cottenrouter keys --project whitedns-panel` to find the selected address, then forward it, for example `ssh -L 2054:127.0.0.1:2054 root@SERVER`. Router owns maintenance for this installation: update it with the Router command above. Account management and backup downloads remain in the Panel; its standalone privileged updater and public HTTPS wizard are unavailable in Router mode.
+Use a separate, short delegated base zone for the Panel. Router forwards its account subdomains to the private backend. Panel accounts provide **Soar over UDP** and **Normal Cotten over UDP/TCP**. The standalone **CottenDNS** entry provides **Normal and CottenMax** with their existing shared domain/key.
 
-Backend updates resolve current upstream releases on every operation, independently of Router's own version. A future backend release must pass the compatibility and health checks before it replaces the working installation. Check GitHub/network errors if release discovery fails; it will not silently install a stale bundled version.
+The first Panel install prompts for an administrator password; automated installs can pass `--panel-password-file /path/to/protected-file` (0600). Updates preserve the database, account keys, usage and chosen session limits. Router verifies archive/runtime checksums and capabilities, checks readiness, and restores the previous service and database if an upgrade fails.
 
-There is no hidden eight-session default: standalone CottenDNS and CottenMax default to 2,048 sessions; expanded capacity raises this to at least 4,096. The embedded Cotten runtime and new/implicit Panel account defaults are 64, configurable per account up to 4,096. Existing explicit administrator limits are preserved. Limits count sessions, not guaranteed concurrent users, and should fit the server's resources.
+Administration binds to loopback, normally `127.0.0.1:2054`; occupied ports are skipped. Run `sudo cottenrouter keys --project whitedns-panel` to find the address, then forward it, for example `ssh -L 2054:127.0.0.1:2054 root@SERVER`. Router owns maintenance for this installation. Account management and backup downloads remain in the Panel; its standalone privileged updater and public HTTPS wizard are unavailable in Router mode.
+
+For CottenDNS, use `sudo cottenrouter update --project cottendns`. Every operation resolves the latest published compatible release independently of Router's version, with no silent stale-version fallback.
+
+Published standalone CottenDNS and CottenMax have no hidden eight-session cap: defaults are 2,048 sessions and expanded capacity raises them to at least 4,096. The current embedded Cotten runtime and the **Panel beta** use 64 for new/implicit account defaults, configurable per account up to 4,096. Explicit administrator limits are preserved. The existing stable Panel release has not received these beta changes. These are session ceilings, not guaranteed user counts.
 
 <a id="cottenmax-beta"></a>
 

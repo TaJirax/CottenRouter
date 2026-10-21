@@ -21,6 +21,13 @@ func updateRequest(state ProjectState, routerConfig string) (Request, error) {
 // Update fetches the current installer and preserves the managed integration.
 // It never upgrades or replaces the running CottenRouter executable.
 func (m Manager) Update(ctx context.Context, projectID, routerConfig string, progress Progress) (PortPlan, error) {
+	return m.UpdateWithPanelBetaBundle(ctx, projectID, routerConfig, "", progress)
+}
+
+func (m Manager) UpdateWithPanelBetaBundle(ctx context.Context, projectID, routerConfig, bundle string, progress Progress) (PortPlan, error) {
+	if bundle != "" && projectID != "whitedns-panel" {
+		return PortPlan{}, fmt.Errorf("--panel-beta-bundle is available only for WhiteDNS Panel")
+	}
 	if _, err := SpecFor(projectID); err != nil {
 		return PortPlan{}, err
 	}
@@ -39,6 +46,7 @@ func (m Manager) Update(ctx context.Context, projectID, routerConfig string, pro
 		if err != nil {
 			return PortPlan{}, err
 		}
+		request.PanelBetaBundle = bundle
 		return m.Install(ctx, request, progress)
 	}
 	return PortPlan{}, fmt.Errorf("unknown project %q", projectID)

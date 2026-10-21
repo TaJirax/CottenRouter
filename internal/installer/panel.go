@@ -24,6 +24,46 @@ import (
 	"github.com/TaJirax/CottenRouter/internal/catalog"
 )
 
+// This opt-in beta stays on its CI channel. It is never republished as a stable
+// Panel release or selected by automatic stable release discovery.
+const panelBetaDigest = "59f64f2de6a5fbbc652bd93e0cd9e2ab4675816b9cbf27a1324f66eceab8f90b"
+const panelBetaBuild = "https://github.com/WhiteDNS/Soar-Server/actions/runs/39619905951/artifacts/12354244178"
+
+func panelBetaProject() catalog.Project {
+	for _, project := range catalog.Projects() {
+		if project.ID == "whitedns-panel" {
+			project.ReleaseTag = "panel-v0.5.1"
+			project.CommitSHA = "50c695b99dbc9a6d4cc912e5bc99c92fc103a58c"
+			return project
+		}
+	}
+	panic("WhiteDNS Panel is absent from catalog")
+}
+
+func readPanelBetaBundle(name string) ([]byte, []byte, error) {
+	if err := rejectSymlinkComponents(name); err != nil {
+		return nil, nil, err
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 32<<20 {
+		return nil, nil, fmt.Errorf("Panel beta bundle must be a regular archive of at most 32 MiB")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, (32<<20)+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != panelBetaDigest {
+		return nil, nil, fmt.Errorf("Panel beta archive differs from tested CI build; download and unzip %s", panelBetaBuild)
+	}
+	return data, []byte(panelBetaDigest + "  soar-panel-0.5.1-linux-amd64.tar.gz\n"), nil
+}
+
 func panelAsset(tag string) (string, error) {
 	if !regexp.MustCompile(`^panel-v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(tag) {
 		return "", fmt.Errorf("invalid panel release tag")
@@ -220,13 +260,20 @@ func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, p
 	if err != nil {
 		return err
 	}
-	base := "https://github.com/WhiteDNS/Soar-Server/releases/download/" + project.ReleaseTag + "/"
-	progress("Downloading current stable WhiteDNS Panel " + project.ReleaseTag + " and verifying archive/runtime checksums")
-	archive, err := m.downloadLimited(ctx, base+asset, 32<<20)
-	if err != nil {
-		return err
+	var archive, checksum []byte
+	channel := "stable"
+	if request.PanelBetaBundle != "" {
+		channel = "beta"
+		progress("Explicit Panel 0.5.1 beta selected; verifying the pinned CI archive")
+		archive, checksum, err = readPanelBetaBundle(request.PanelBetaBundle)
+	} else {
+		base := "https://github.com/WhiteDNS/Soar-Server/releases/download/" + project.ReleaseTag + "/"
+		progress("Downloading current stable WhiteDNS Panel " + project.ReleaseTag + " and verifying archive/runtime checksums")
+		archive, err = m.downloadLimited(ctx, base+asset, 32<<20)
+		if err == nil {
+			checksum, err = m.download(ctx, base+asset+".sha256")
+		}
 	}
-	checksum, err := m.download(ctx, base+asset+".sha256")
 	if err != nil {
 		return err
 	}
@@ -244,7 +291,7 @@ func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, p
 	}
 	features, err := m.Runner.Output(ctx, candidate, "capabilities")
 	if err != nil || !strings.Contains(string(features), "account-session-limits") {
-		return fmt.Errorf("WhiteDNS Panel release lacks configurable account sessions; publish an updated panel release before installation")
+		return fmt.Errorf("the current stable Panel lacks the required session fixes; no service was stopped. For explicit beta testing, download and unzip %s and pass --panel-beta-bundle /path/to/soar-panel-0.5.1-linux-amd64.tar.gz; stable installation will become available when upstream publishes a compatible release", panelBetaBuild)
 	}
 	db := filepath.Join(spec.WorkDir, "panel.db")
 	if err := rejectSymlinkComponents(db); err != nil {
@@ -382,11 +429,11 @@ printf '%s' "$password" > "$password_file"
 		}
 	}
 	sum := sha256.Sum256(archive)
-	record, _ := json.MarshalIndent(map[string]string{"repository": project.Repository, "commit_sha": project.CommitSHA, "release_tag": project.ReleaseTag, "archive_sha256": hex.EncodeToString(sum[:])}, "", "  ")
+	record, _ := json.MarshalIndent(map[string]string{"repository": project.Repository, "commit_sha": project.CommitSHA, "release_tag": project.ReleaseTag, "release_channel": channel, "archive_sha256": hex.EncodeToString(sum[:])}, "", "  ")
 	if err := atomicWrite(filepath.Join(spec.WorkDir, "upstream.json"), append(record, '\n'), 0600); err != nil {
 		return err
 	}
-	progress("WhiteDNS Panel " + project.ReleaseTag + " is ready on " + envValue(configured, "PANEL_HTTP_LISTEN") + "; use SSH forwarding. Update through cottenrouter update --project whitedns-panel; accounts and keys are preserved.")
+	progress("WhiteDNS Panel " + project.ReleaseTag + " (" + channel + ") is ready on " + envValue(configured, "PANEL_HTTP_LISTEN") + "; use SSH forwarding. Accounts and keys are preserved.")
 	return nil
 }
 

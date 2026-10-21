@@ -519,6 +519,9 @@ func (m *Model) beginForm(operation string) {
 		}
 	}
 	m.fields = append(m.fields, newField("port", "Private DNS port", strconv.Itoa(port)))
+	if spec.Kind == installer.ConfigPanel && m.operation != "configure" {
+		m.fields = append(m.fields, newField("panel-bundle", "Beta CI archive path (blank: stable)", ""))
+	}
 	if spec.ID == "cottendns" {
 		m.fields = append(m.fields, newField("capacity", "Session capacity (keep / expanded)", "keep"))
 	}
@@ -609,7 +612,7 @@ func (m Model) formRequest() (installer.Request, error) {
 	}
 	request := installer.Request{ProjectID: spec.ID, Domain: strings.TrimSpace(values["domain"]), PrivatePort: port,
 		ExtraDomains: strings.TrimSpace(values["extra"]), ChatDomains: strings.TrimSpace(values["chat"]), RouterConfig: m.routerConfig,
-		EnableTCP: m.enableTCP, EnableDoT: m.enableDoT, EnableDoH: m.enableDoH, DoTDomain: strings.TrimSpace(values["dot"]), DoHDomain: strings.TrimSpace(values["doh"])}
+		EnableTCP: m.enableTCP, EnableDoT: m.enableDoT, EnableDoH: m.enableDoH, DoTDomain: strings.TrimSpace(values["dot"]), DoHDomain: strings.TrimSpace(values["doh"]), PanelBetaBundle: strings.TrimSpace(values["panel-bundle"])}
 	if spec.ID == "cottendns" {
 		switch strings.ToLower(strings.TrimSpace(values["capacity"])) {
 		case "", "keep":
@@ -674,6 +677,9 @@ func (m Model) installCommand() (*exec.Cmd, error) {
 	args := []string{operation, "--project", request.ProjectID, "--domain", request.Domain, "--port", strconv.Itoa(request.PrivatePort), "--router-config", request.RouterConfig}
 	if request.ExpandedCapacity {
 		args = append(args, "--expanded-capacity")
+	}
+	if request.PanelBetaBundle != "" {
+		args = append(args, "--panel-beta-bundle", request.PanelBetaBundle)
 	}
 	if request.ExtraDomains != "" {
 		args = append(args, "--extra-domains", request.ExtraDomains)

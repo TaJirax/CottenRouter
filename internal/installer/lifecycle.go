@@ -72,9 +72,13 @@ func Discover(routerConfig string) ([]ProjectState, error) {
 			if raw, err := os.ReadFile(filepath.Join(spec.WorkDir, "upstream.json")); err == nil {
 				var record struct {
 					Release string `json:"release_tag"`
+					Channel string `json:"release_channel"`
 				}
 				if json.Unmarshal(raw, &record) == nil {
 					state.Version = record.Release
+					if record.Channel == "beta" {
+						state.Version += " (beta)"
+					}
 				}
 			}
 		}
@@ -251,6 +255,9 @@ func readSmallFile(path string) ([]byte, error) {
 }
 
 func (m Manager) Configure(ctx context.Context, request Request, progress Progress) (PortPlan, error) {
+	if request.PanelBetaBundle != "" {
+		return PortPlan{}, fmt.Errorf("use install or update with --panel-beta-bundle; configure only edits existing settings")
+	}
 	if progress == nil {
 		progress = func(string) {}
 	}
