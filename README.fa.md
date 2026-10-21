@@ -49,11 +49,13 @@
 | بخش | وضعیت بتا |
 |---|---|
 | سورس Router و CottenDNS | تغییرات روی شاخه `main` در [WhiteDNS/CottenRouter](https://github.com/WhiteDNS/CottenRouter)، [TaJirax/CottenRouter](https://github.com/TaJirax/CottenRouter)، [WhiteDNS/CottenDNS](https://github.com/WhiteDNS/CottenDNS) و [TaJirax/cottenDNS](https://github.com/TaJirax/cottenDNS) قرار دارند |
-| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39496092467/artifacts/12298076386)، با انتخاب Normal / CottenMax |
-| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39495252224/artifacts/12298456373)، با انتخاب حالت در پروفایل |
+| کلاینت دسکتاپ | [بیلد debug ویندوز](https://github.com/WhiteDNS/WhiteDNS-Desktop/actions/runs/39582214192/artifacts/12338600003)، با انتخاب Normal / CottenMax |
+| کلاینت اندروید | [APKهای debug](https://github.com/WhiteDNS/WhiteDNS-Android/actions/runs/39582513479/artifacts/12339120389)، با انتخاب حالت در پروفایل |
 | نصب‌کننده‌های منتشرشده | همچنان آخرین **release منتشرشده** را دریافت می‌کنند؛ push به `main` به‌تنهایی باینری بتا منتشر نمی‌کند |
 
 این artifactهای CI موقت هستند و ممکن است دریافت آن‌ها به ورود به حساب GitHub نیاز داشته باشد. **release جدیدی برای دسکتاپ یا اندروید منتشر نشده است.** هنگام آزمایش روی دستگاه واقعی، اینترنت موبایل و اتصال‌های طولانی، حالت Normal را برای بازگشت در دسترس نگه دارید.
+
+کلاینت‌های به‌روز Max برای انتقال واقعی ترافیک تونل از DNS روی UDP و TCP پشتیبانی می‌کنند. حالت Auto در کشف resolver و اسکن MTU همراه با احراز هویت، هر دو مسیر را مستقل آزمایش می‌کند و ترافیک را از مسیرهای قابل استفاده عبور می‌دهد. پراکسی محلی دستگاه و مسیر Router همان تنظیمات قبلی را دارند؛ [راهنمای انتقال UDP/TCP و اسکن](https://github.com/WhiteDNS/CottenDNS/blob/main/docs/COTTENMAX_OPTIONS.md#udptcp-connections-and-authenticated-mtu-scans) را ببینید.
 
 برای آزمایش رابط به‌روز Router از `--channel=edge` یا `--local-source` طبق دستورهای پایین استفاده کنید. این گزینه‌ها فقط **خود Router** را به‌روز می‌کنند؛ عملیات نصب/به‌روزرسانی CottenDNS در آن همچنان آخرین release منتشرشده CottenDNS را دریافت می‌کند. برای Max، ابتدا سرور بتای سازگار CottenDNS را طبق [راهنمای بتای CottenDNS](https://github.com/WhiteDNS/CottenDNS#cottenmax-beta) از سورس نصب کنید.
 
