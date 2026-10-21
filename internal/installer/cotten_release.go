@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 func (m Manager) verifyCottenDNSRelease(ctx context.Context, spec Spec, expected string) error {
@@ -30,6 +31,19 @@ func (m Manager) verifyCottenDNSRelease(ctx context.Context, spec Spec, expected
 	}
 	if !releaseVersionMatches(string(version), expected) {
 		return fmt.Errorf("CottenDNS update installed %q; expected latest WhiteDNS/CottenDNS release %s", string(version), expected)
+	}
+	capabilities, err := m.Runner.Output(ctx, binary, "--capabilities")
+	if err != nil {
+		return fmt.Errorf("installed CottenDNS does not advertise Normal/Max capabilities: %w", err)
+	}
+	features := map[string]bool{}
+	for _, value := range strings.Fields(string(capabilities)) {
+		features[value] = true
+	}
+	for _, feature := range []string{"cottendns-normal", "cottenmax", "dns-udp", "dns-tcp", "shared-key"} {
+		if !features[feature] {
+			return fmt.Errorf("installed CottenDNS is missing %s; install a current server release before connecting Max clients", feature)
+		}
 	}
 	return nil
 }

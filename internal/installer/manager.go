@@ -886,7 +886,11 @@ func (m Manager) runProtectedCommand(ctx context.Context, spec Spec, command str
 		}
 	}
 	protectedPath := shimDir + string(os.PathListSeparator) + os.Getenv("PATH")
-	commandArgs := append([]string{"PATH=" + protectedPath, command}, args...)
+	envArgs := []string{"PATH=" + protectedPath}
+	if spec.ID == "cottendns" {
+		envArgs = append(envArgs, "COTTENDNS_ROUTER_MANAGED=1", "COTTENDNS_REQUIRE_MAX=1")
+	}
+	commandArgs := append(append(envArgs, command), args...)
 	return m.Runner.Run(ctx, "env", commandArgs, workDir, true)
 }
 

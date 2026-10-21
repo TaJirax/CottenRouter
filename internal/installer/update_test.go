@@ -91,6 +91,9 @@ func (r releaseProbeRunner) Output(_ context.Context, name string, args ...strin
 	if name == "systemctl" {
 		return []byte("{ path=" + r.binary + " ; argv[]=server ; }"), nil
 	}
+	if len(args) == 1 && args[0] == "--capabilities" {
+		return []byte("cottendns-normal cottenmax dns-udp dns-tcp shared-key"), nil
+	}
 	return []byte(r.version), nil
 }
 
