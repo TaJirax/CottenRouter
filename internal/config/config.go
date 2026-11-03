@@ -32,6 +32,7 @@ type Config struct {
 	ListenTCP                    string        `json:"listen_tcp,omitempty"`
 	AdminListen                  string        `json:"admin_listen,omitempty"`
 	QueryTimeoutMS               int           `json:"query_timeout_ms"`
+	TLSIdleTimeoutMS             int           `json:"tls_idle_timeout_ms,omitempty"`
 	MaxPacketSize                int           `json:"max_packet_size"`
 	MaxTCPMessageSize            int           `json:"max_tcp_message_size"`
 	MaxPendingPerBackend         int           `json:"max_pending_per_backend"`
@@ -136,6 +137,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.QueryTimeoutMS == 0 {
 		c.QueryTimeoutMS = defaultTimeoutMS
+	}
+	if c.TLSIdleTimeoutMS == 0 {
+		c.TLSIdleTimeoutMS = int((15 * time.Minute) / time.Millisecond)
 	}
 	if c.MaxPacketSize == 0 {
 		c.MaxPacketSize = defaultPacketSize
@@ -254,6 +258,9 @@ func (c *Config) Validate() error {
 	c.AdminListen = admin.String()
 	if c.QueryTimeoutMS < 100 || c.QueryTimeoutMS > int((10*time.Minute)/time.Millisecond) {
 		return fmt.Errorf("query_timeout_ms must be between 100 and 600000")
+	}
+	if c.TLSIdleTimeoutMS < 1000 || c.TLSIdleTimeoutMS > int((24*time.Hour)/time.Millisecond) {
+		return fmt.Errorf("tls_idle_timeout_ms must be between 1000 and 86400000")
 	}
 	if c.MaxPacketSize < 512 || c.MaxPacketSize > 16*1024 {
 		return fmt.Errorf("max_packet_size must be between 512 and 16384")
@@ -500,6 +507,10 @@ func loadVerifyKey(verify VerifyConfig) ([]byte, error) {
 
 func (c Config) QueryTimeout() time.Duration {
 	return time.Duration(c.QueryTimeoutMS) * time.Millisecond
+}
+
+func (c Config) TLSIdleTimeout() time.Duration {
+	return time.Duration(c.TLSIdleTimeoutMS) * time.Millisecond
 }
 
 // validateNoSelfRouting rejects a backend that points back at one of

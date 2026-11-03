@@ -146,16 +146,15 @@ func (s *Server) handleTLSClient(client net.Conn, clientIP netip.Addr, routes []
 		return
 	}
 	s.stats.In(protocol, routeName, len(initial))
-	_ = client.SetDeadline(time.Time{})
-	_ = backend.SetDeadline(time.Time{})
+	relayClient, relayBackend := newIdleRelay(client, backend, s.cfg.TLSIdleTimeout())
 
 	errorsCh := make(chan error, 2)
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: client, allow: func(n int) bool { return s.guard.AllowProtocolResponse(protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.Out(protocol, routeName, n) }}, backend, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: relayClient, allow: func(n int) bool { return s.guard.AllowProtocolResponse(protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.Out(protocol, routeName, n) }}, relayBackend, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	go func() {
-		_, err := io.CopyBuffer(&guardedWriter{writer: backend, allow: func(n int) bool { return s.guard.AllowSourceProtocolIngress(clientIP, protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.In(protocol, routeName, n) }}, client, make([]byte, 32*1024))
+		_, err := io.CopyBuffer(&guardedWriter{writer: relayBackend, allow: func(n int) bool { return s.guard.AllowSourceProtocolIngress(clientIP, protocol, n) }, rejected: func() { s.stats.Drop(true) }, record: func(n int) { s.stats.In(protocol, routeName, n) }}, relayClient, make([]byte, 32*1024))
 		errorsCh <- err
 	}()
 	<-errorsCh
