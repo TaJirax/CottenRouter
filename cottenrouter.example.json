@@ -3,6 +3,7 @@
   "listen_tcp": "0.0.0.0:53",
 	"admin_listen": "127.0.0.1:9088",
   "query_timeout_ms": 10000,
+  "tls_idle_timeout_ms": 900000,
   "max_packet_size": 16384,
 	"max_tcp_message_size": 16384,
   "max_pending_per_backend": 8192,
