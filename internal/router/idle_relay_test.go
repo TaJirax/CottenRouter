@@ -47,6 +47,14 @@ func TestIdleRelayExpiresQuietAndBlockedConnections(t *testing.T) {
 }
 
 func TestIdleRelayOneWayTrafficKeepsBothDirectionsAlive(t *testing.T) {
+	for _, downloadOnly := range []bool{true, false} {
+		t.Run(map[bool]string{true: "download", false: "upload"}[downloadOnly], func(t *testing.T) {
+			testIdleRelayOneWayTraffic(t, downloadOnly)
+		})
+	}
+}
+
+func testIdleRelayOneWayTraffic(t *testing.T, downloadOnly bool) {
 	client, peer := net.Pipe()
 	defer client.Close()
 	defer peer.Close()
@@ -57,12 +65,16 @@ func TestIdleRelayOneWayTrafficKeepsBothDirectionsAlive(t *testing.T) {
 	done := make(chan error, 2)
 	go func() { _, err := io.Copy(download, upload); done <- err }()
 	go func() { _, err := io.Copy(upload, download); done <- err }()
+	sender, receiver := remote, peer
+	if !downloadOnly {
+		sender, receiver = peer, remote
+	}
 	for i := 0; i < 10; i++ {
 		written := make(chan error, 1)
-		go func() { _, err := remote.Write([]byte{42}); written <- err }()
-		peer.SetReadDeadline(time.Now().Add(time.Second))
-		if _, err := io.ReadFull(peer, make([]byte, 1)); err != nil {
-			t.Fatal("active download interrupted", err)
+		go func() { _, err := sender.Write([]byte{42}); written <- err }()
+		receiver.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := io.ReadFull(receiver, make([]byte, 1)); err != nil {
+			t.Fatal("active one-way transfer interrupted", err)
 		}
 		if err := <-written; err != nil {
 			t.Fatal(err)
@@ -71,7 +83,7 @@ func TestIdleRelayOneWayTrafficKeepsBothDirectionsAlive(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		t.Fatal("quiet upload side timed out a live download", err)
+		t.Fatal("quiet reverse direction timed out a live transfer", err)
 	default:
 	}
 	// Once both directions stop, a blocked copy exits and closes its partner.
