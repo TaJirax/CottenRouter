@@ -67,6 +67,17 @@ type pendingQuery struct {
 	// question fingerprints the query so a reply carrying the right transaction
 	// ID but the wrong question cannot consume the mapping.
 	question dnswire.Question
+	// response is set for a DNS-over-TCP query bridged through this UDP
+	// dispatcher. A buffered channel lets the reader finish even if the TCP
+	// client disconnects concurrently with a valid reply.
+	response chan []byte
+}
+
+func (q pendingQuery) protocol() string {
+	if q.response != nil {
+		return "dns/tcp"
+	}
+	return "dns/udp"
 }
 
 // matches reports whether a reply's echoed question is the one we asked. End is
@@ -382,6 +393,8 @@ func (s *Server) ServeTCP(ctx context.Context, listener net.Listener) error {
 
 func (s *Server) handleTCPConnection(client net.Conn) {
 	defer client.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var writeMu sync.Mutex
 	var queries sync.WaitGroup
 	inflight := make(chan struct{}, s.cfg.Limits.MaxTCPInflightPerConnection)
@@ -391,6 +404,13 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 		_ = client.SetReadDeadline(time.Now().Add(s.cfg.QueryTimeout()))
 		packet, err := readTCPMessage(client, s.cfg.MaxTCPMessageSize)
 		if err != nil {
+			// EOF can be a client's TCP CloseWrite: queued replies must still
+			// drain to its open read side. Resets, read deadlines and other
+			// failures cancel UDP pending work immediately. A FIN-only full
+			// disconnect is bounded by the ordinary backend query timeout.
+			if !errors.Is(err, io.EOF) {
+				cancel()
+			}
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				s.logger.Debug("TCP client read stopped", "client", client.RemoteAddr(), "error", err)
 			}
@@ -398,19 +418,29 @@ func (s *Server) handleTCPConnection(client net.Conn) {
 		}
 		if !s.guard.AllowQueryIngress(clientIP, len(packet)+2) {
 			s.stats.Drop(true)
+			cancel()
 			return
 		}
-		inflight <- struct{}{}
+		select {
+		case inflight <- struct{}{}:
+		case <-s.done:
+			cancel()
+			return
+		}
 		queries.Add(1)
 		go func() {
 			defer queries.Done()
 			defer func() { <-inflight }()
-			s.handleTCPQuery(client, &writeMu, packet)
+			s.handleTCPQueryContext(ctx, client, &writeMu, packet)
 		}()
 	}
 }
 
 func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []byte) {
+	s.handleTCPQueryContext(context.Background(), client, writeMu, packet)
+}
+
+func (s *Server) handleTCPQueryContext(ctx context.Context, client net.Conn, writeMu *sync.Mutex, packet []byte) {
 	question, err := dnswire.ParseQuestion(packet)
 	if err != nil {
 		return
@@ -423,6 +453,23 @@ func (s *Server) handleTCPQuery(client net.Conn, writeMu *sync.Mutex, packet []b
 		return
 	}
 	s.stats.Query("dns/tcp", route.name, len(packet)+2)
+	if route.tcpBackend == "udp" {
+		response, verified := s.verificationResponse(packet, route)
+		if !verified {
+			response, err = s.exchangeTCPViaUDP(ctx, route, packet, question)
+		}
+		if err != nil || len(response) > s.cfg.MaxTCPMessageSize {
+			s.stats.Error("dns/tcp", route.name)
+			if ctx.Err() != nil {
+				return
+			}
+			response = dnswire.ErrorResponse(packet, 2)
+		}
+		if s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout()) {
+			s.stats.Out("dns/tcp", route.name, len(response)+2)
+		}
+		return
+	}
 	if route.tcpBackend == "disabled" {
 		response := dnswire.ErrorResponse(packet, 2)
 		if s.writeTCPMessage(client, writeMu, response, s.cfg.QueryTimeout()) {
@@ -749,8 +796,12 @@ func (s *Server) readBackend(backend *backendConn) {
 		if !ok {
 			continue
 		}
-		s.stats.SessionClose("dns/udp", query.route)
+		s.stats.SessionClose(query.protocol(), query.route)
 		binary.BigEndian.PutUint16(buffer[:2], query.clientID)
+		if query.response != nil {
+			query.response <- append([]byte(nil), buffer[:n]...)
+			continue
+		}
 		if !s.guard.AllowResponse(n) {
 			s.stats.Drop(true)
 			continue
@@ -821,9 +872,11 @@ func (s *Server) closeBackend(backend *backendConn, failed bool) {
 		s.mu.Unlock()
 	}
 	for _, query := range pending {
-		s.stats.SessionClose("dns/udp", query.route)
-		if failed {
-			s.stats.Error("dns/udp", query.route)
+		s.stats.SessionClose(query.protocol(), query.route)
+		// TCP bridge callers observe backend.done and record their own error;
+		// UDP ingress has no waiting caller to do that accounting.
+		if failed && query.response == nil {
+			s.stats.Error(query.protocol(), query.route)
 		}
 	}
 }
@@ -1018,7 +1071,7 @@ func (s *Server) expirePending(backend *backendConn) {
 			for id, query := range backend.pending {
 				if !now.Before(query.expiresAt) {
 					delete(backend.pending, id)
-					s.stats.SessionClose("dns/udp", query.route)
+					s.stats.SessionClose(query.protocol(), query.route)
 				}
 			}
 			retiredAndDrained = !backend.retireAt.IsZero() && !now.Before(backend.retireAt) && len(backend.pending) == 0

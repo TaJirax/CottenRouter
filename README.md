@@ -158,7 +158,7 @@ Install a specific release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.19
+  | sudo bash -s -- --version=v1.2.25
 ```
 
 Install the current development branch:
@@ -254,6 +254,12 @@ cottenrouter slipgate-import \
   --input /etc/slipgate/config.json \
   --output cottenrouter.json
 ```
+
+SlipGate DNS transports, including Soar, support both UDP and TCP ingress;
+imported routes use `tcp_backend: "udp"` to reach their native UDP listeners.
+Feed's native main, alias, messenger and MTProto domains are automatically
+routed together on install, update and Advanced save. See
+[backend integration](docs/backend-integration.md) for native paths and settings.
 
 Inspect current upstream projects and installers:
 
@@ -367,7 +373,7 @@ Pinning a version is useful for reproducible deployments or returning to a known
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.19
+  | sudo bash -s -- --version=v1.2.25
 ```
 
 Available versions are listed on the [Releases page](https://github.com/TaJirax/CottenRouter/releases).
@@ -508,10 +514,10 @@ CottenRouter is designed to interoperate with these independent open-source proj
 | **CottenDNS** | DNS tunnel with UDP/TCP, DoT, DoH, ARQ, MTU discovery and the optional CottenMax beta mode | [Repository](https://github.com/WhiteDNS/CottenDNS) |
 | **MasterDnsVPN** | DNS tunneling backend | [Repository](https://github.com/masterking32/MasterDnsVPN) |
 | **StormDNS** | DNS tunneling backend | [Repository](https://github.com/nullroute1970/StormDNS) |
-| **thefeed** | Feed, chat, media, and relay over DNS | [Repository](https://github.com/sartoopjj/thefeed) |
+| **thefeed** | Feed, chat, MTProto, media, and relay over DNS | [Repository](https://github.com/sartoopjj/thefeed) |
 | **Soar** | Encrypted TCP streams through recursive DNS resolvers | [Repository](https://github.com/getlantern/soar) |
 | **Soar 2.2 / WhiteDNS** | Standalone bundle of Lantern Soar v0.2.2 | [Repository](https://github.com/WhiteDNS/Soar-Server) |
-| **SlipGate** | DNS transports, SlipNet, NaiveProxy, and StunTLS | [Repository](https://github.com/anonvector/slipgate) |
+| **SlipGate** | DNS transports including Soar, SlipNet, NaiveProxy, and StunTLS | [Repository](https://github.com/anonvector/slipgate) |
 
 The terminal UI is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), and [Lip Gloss](https://github.com/charmbracelet/lipgloss) from [Charm](https://charm.sh/). The Docker runtime uses `scratch` with the static router and trusted CA certificates. Complete dependency lists are available in [`go.mod`](go.mod) and [`go.sum`](go.sum).
 

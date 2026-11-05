@@ -49,3 +49,16 @@ coverage.txt
 /docs/cottenmax-options-and-experiments-2026-10-19.md
 /docs/dns-countermeasure-audit-2026-10-19.md
 /tests/integration/cottendns/results/2026-10-19-max-options.json
+
+# Feed/SlipGate integration regression sources belong to the product change.
+!/internal/config/slipgate_current_test.go
+!/internal/config/tcp_udp_test.go
+!/internal/installer/slipgate_current_test.go
+!/internal/installer/thefeed_test.go
+!/internal/installer/thefeed_routes_test.go
+!/internal/router/tcp_udp_test.go
+!/tests/
+/tests/*
+!/tests/systemd/
+/tests/systemd/*
+!/tests/systemd/feed-slipgate-install-test.py

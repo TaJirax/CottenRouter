@@ -50,6 +50,21 @@ for supported settings and the distinction between local builds and releases.
 Thefeed's native wizard requires at least one channel/account source. SlipGate
 uses its full native wizard. The layout adapts to ordinary 80×24 terminals.
 
+Thefeed installs into `/opt/thefeed` with its native environment file at
+`/opt/thefeed/data/thefeed.env`. Main, alias, messenger and MTProto DNS zones
+selected in the native wizard are routed together, including future native
+`THEFEED_*_DOMAINS` lists. The final native wizard choices take precedence over
+the earlier guided form, including domain changes, removed aliases and disabled
+messenger domains during an update. CottenRouter assigns the private loopback
+listener. Advanced saves refresh those routes without changing native quotas,
+relay or media options.
+
+SlipGate installs its manager at `/usr/local/bin/slipgate` and keeps its native
+configuration at `/etc/slipgate/config.json`. Its DNS transports, including
+Soar, are imported with UDP and TCP ingress; TCP queries bridge to the private
+UDP tunnel. NaiveProxy and StunTLS keep TLS passthrough, and enabled WARP stays
+managed by SlipGate. New unrelated native settings do not block integration.
+
 Soar and Soar 2.2 each have a guided form for a single delegated zone and private UDP port.
 They have no extra/chat domains or TCP/DoT/DoH toggles. The Advanced editor manages
 `SOAR_ZONE`, `SOAR_LISTEN`, and `SOAR_ALLOW_PORTS` in

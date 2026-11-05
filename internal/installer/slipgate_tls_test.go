@@ -213,14 +213,13 @@ func TestBuildSlipGateTLSPlanPortExhaustionAndPublicPortExclusion(t *testing.T) 
 
 func TestBuildSlipGateTLSPlanFailsClosedOnConfigShape(t *testing.T) {
 	tests := map[string]string{
-		"unknown top-level field": `{"listen":{},"tunnels":[],"backends":[],"route":{},"future":true}`,
-		"wrong top-level shape":   `{"listen":[],"tunnels":[],"backends":[],"route":{}}`,
-		"unknown tunnel field":    slipGateTLSFixtureText(`{"tag":"web","transport":"naive","domain":"web.example","enabled":true,"future":true,"naive":{"email":"a","decoy_url":"https://x","port":443}}`),
-		"unknown naive field":     slipGateTLSFixtureText(`{"tag":"web","transport":"naive","domain":"web.example","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443,"future":true}}`),
-		"unsafe traversal tag":    slipGateTLSFixtureText(`{"tag":"..","transport":"naive","domain":"web.example","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443}}`),
-		"invalid naive domain":    slipGateTLSFixtureText(`{"tag":"web","transport":"naive","domain":"bad domain","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443}}`),
-		"missing stunt cert":      slipGateTLSFixtureText(`{"tag":"stun","transport":"stuntls","enabled":true,"stuntls":{"cert":"","key":"/key","port":443}}`),
-		"invalid public port":     slipGateTLSFixtureText(`{"tag":"stun","transport":"stuntls","enabled":true,"stuntls":{"cert":"/cert","key":"/key","port":0}}`),
+		"trailing JSON value":   `{"listen":{},"tunnels":[],"backends":[],"route":{}} {}`,
+		"wrong top-level shape": `{"listen":[],"tunnels":[],"backends":[],"route":{}}`,
+		"unknown naive field":   slipGateTLSFixtureText(`{"tag":"web","transport":"naive","domain":"web.example","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443,"future":true}}`),
+		"unsafe traversal tag":  slipGateTLSFixtureText(`{"tag":"..","transport":"naive","domain":"web.example","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443}}`),
+		"invalid naive domain":  slipGateTLSFixtureText(`{"tag":"web","transport":"naive","domain":"bad domain","enabled":true,"naive":{"email":"a","decoy_url":"https://x","port":443}}`),
+		"missing stunt cert":    slipGateTLSFixtureText(`{"tag":"stun","transport":"stuntls","enabled":true,"stuntls":{"cert":"","key":"/key","port":443}}`),
+		"invalid public port":   slipGateTLSFixtureText(`{"tag":"stun","transport":"stuntls","enabled":true,"stuntls":{"cert":"/cert","key":"/key","port":0}}`),
 	}
 	for name, fixture := range tests {
 		t.Run(name, func(t *testing.T) {

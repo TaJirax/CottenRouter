@@ -73,6 +73,8 @@ def verify(name):
     response = exchange('127.0.0.1:53', query, tcp=True)
     if name == 'cottendns':
         assert response == exchange(routes[name]['backend'], query, tcp=True), 'TCP reply changed in transit'
+    elif routes[name].get('tcp_backend') == 'udp':
+        assert response == baseline, name + ': TCP-to-UDP reply changed in transit'
     else:
         assert response[3] & 15 == 2, name + ': UDP-only route must return TCP SERVFAIL'
     return name

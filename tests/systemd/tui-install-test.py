@@ -92,6 +92,7 @@ try:
         ('Add private channel invite links?', b'n\n'),
         ('Main DNS domain (e.g., t.example.com): ', b'feed.systemd.test\n'),
         ('Add extra domains?', b'n\n'), ('Enable the messenger?', b'n\n'),
+        ('Enable the Telegram proxy?', b'n\n'),
         ('Encryption passphrase: ', b'tui-local-test-only\n'),
         ('Max messages per channel', b'\n'), ('Fetch cycle interval', b'\n'),
         ('Enable remote management?', b'n\n'), ('Enable DNS relay?', b'n\n'),

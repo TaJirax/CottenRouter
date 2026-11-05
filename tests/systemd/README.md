@@ -95,6 +95,42 @@ drop-in, which otherwise made systemd-resolved reopen port 53.
 The default online bootstrap selects a published release; `--local-source`
 builds the current checkout and its uncommitted changes.
 
+For the current Feed and SlipGate feature setup, start after bootstrap with
+neither backend installed, then run:
+
+```bash
+COTTENROUTER_SYSTEMD_TEST=1 python3 tests/systemd/feed-slipgate-install-test.py
+```
+
+This PTY harness selects Feed aliases, messenger, MTProto and DNS media, plus
+SlipGate DNSTT and built-in Soar. It checks native installation paths, retained
+quotas, imported domains, TCP-to-UDP mode and active services. It requires public
+port 53 to be available in the test distro, as the normal installer does.
+
+The isolated native checks can also run when the host already owns port 53:
+
+```bash
+COTTENROUTER_NAMESPACE_TEST=1 \
+  COTTENROUTER_BINARY=/path/to/cottenrouter \
+  SLIPGATE_BINARY=/path/to/slipgate-linux-amd64 \
+  bash scripts/native-slipgate-contract-test.sh
+
+COTTENROUTER_NAMESPACE_TEST=1 \
+  COTTENROUTER_BINARY=/path/to/cottenrouter \
+  THEFEED_BINARY=/path/to/thefeed-server-linux-amd64 \
+  THEFEED_INSTALLER=/path/to/thefeed/scripts/install.sh \
+  bash scripts/native-thefeed-contract-test.sh
+```
+
+Both require root and Linux mount, PID and network namespaces. They leave host
+paths and networking intact. On November 6, 2026, the current Feed source and
+installer (`a9dea470`) passed native wizard, generated-unit, identity/settings
+preservation and opaque UDP routing checks for all four domain types. SlipGate
+v1.6.8 passed native Soar creation, key/unit paths and byte-exact signed TXT/AAAA
+replies through public UDP and TCP. Systemd/package/download boundaries are
+shimmed; external Telegram login, MTProto connections, media downloads, public
+DNS delegation and real systemd activation remain separate integration checks.
+
 Use the real CLI/native installers in a WSL terminal:
 
 ```bash

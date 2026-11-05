@@ -71,12 +71,13 @@ type slipGateTLSTunnel struct {
 }
 
 type slipGateTLSConfigDocument struct {
-	Listen   json.RawMessage   `json:"listen"`
-	Tunnels  []json.RawMessage `json:"tunnels"`
-	Backends json.RawMessage   `json:"backends"`
-	Users    json.RawMessage   `json:"users,omitempty"`
-	Route    json.RawMessage   `json:"route"`
-	Warp     json.RawMessage   `json:"warp,omitempty"`
+	Listen        json.RawMessage   `json:"listen"`
+	Tunnels       []json.RawMessage `json:"tunnels"`
+	Backends      json.RawMessage   `json:"backends"`
+	Users         json.RawMessage   `json:"users,omitempty"`
+	Route         json.RawMessage   `json:"route"`
+	Warp          json.RawMessage   `json:"warp,omitempty"`
+	PublicAddress string            `json:"public_address,omitempty"`
 }
 
 type slipGateTLSTunnelEnvelope struct {
@@ -89,6 +90,7 @@ type slipGateTLSTunnelEnvelope struct {
 	DNSTT      json.RawMessage `json:"dnstt,omitempty"`
 	Slipstream json.RawMessage `json:"slipstream,omitempty"`
 	VayDNS     json.RawMessage `json:"vaydns,omitempty"`
+	Soar       json.RawMessage `json:"soar,omitempty"`
 	Naive      json.RawMessage `json:"naive,omitempty"`
 	StunTLS    json.RawMessage `json:"stuntls,omitempty"`
 }
@@ -159,7 +161,7 @@ func BuildSlipGateTLSPlan(configData []byte, options SlipGateTLSOptions) (SlipGa
 
 func parseSlipGateTLSTunnels(data []byte) ([]slipGateTLSTunnel, error) {
 	var document slipGateTLSConfigDocument
-	if err := decodeStrictJSON(data, &document); err != nil {
+	if err := decodeSlipGateEnvelopeJSON(data, &document); err != nil {
 		return nil, fmt.Errorf("decode current SlipGate config schema: %w", err)
 	}
 	if document.Tunnels == nil {
@@ -189,7 +191,7 @@ func parseSlipGateTLSTunnels(data []byte) ([]slipGateTLSTunnel, error) {
 	var result []slipGateTLSTunnel
 	for index, raw := range document.Tunnels {
 		var tunnel slipGateTLSTunnelEnvelope
-		if err := decodeStrictJSON(raw, &tunnel); err != nil {
+		if err := decodeSlipGateEnvelopeJSON(raw, &tunnel); err != nil {
 			return nil, fmt.Errorf("decode SlipGate tunnel %d: %w", index, err)
 		}
 		if !tunnel.Enabled || (tunnel.Transport != "naive" && tunnel.Transport != "stuntls") {
@@ -245,8 +247,22 @@ func parseSlipGateTLSTunnels(data []byte) ([]slipGateTLSTunnel, error) {
 }
 
 func decodeStrictJSON(data []byte, target any) error {
+	return decodeSlipGateJSON(data, target, true)
+}
+
+// The outer document and tunnel envelopes contain native feature settings
+// that the router does not modify. Accept extensions there so adding a native
+// transport or an unrelated setting cannot break an existing TLS integration.
+// Settings whose generated TLS artifacts we patch still use strict decoding.
+func decodeSlipGateEnvelopeJSON(data []byte, target any) error {
+	return decodeSlipGateJSON(data, target, false)
+}
+
+func decodeSlipGateJSON(data []byte, target any, strict bool) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}

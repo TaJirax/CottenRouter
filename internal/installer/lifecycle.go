@@ -139,10 +139,13 @@ func configSummary(spec Spec, data []byte) (domain, extra string, port int) {
 
 func envValue(data []byte, key string) string {
 	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `=(.*)$`)
-	match := re.FindSubmatch(data)
-	if len(match) != 2 {
+	matches := re.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
 		return ""
 	}
+	// systemd EnvironmentFile uses the last assignment for a repeated key.
+	// Validation and route planning must inspect the value the service receives.
+	match := matches[len(matches)-1]
 	return strings.Trim(strings.TrimSpace(string(match[1])), `"'`)
 }
 
@@ -219,6 +222,9 @@ func Credentials(projectID string, reveal bool) ([]Credential, error) {
 					VayDNS *struct {
 						PublicKey string `json:"public_key"`
 					} `json:"vaydns"`
+					Soar *struct {
+						PublicKey string `json:"public_key"`
+					} `json:"soar"`
 				} `json:"tunnels"`
 			}
 			if json.Unmarshal(data, &document) == nil {
@@ -229,6 +235,9 @@ func Credentials(projectID string, reveal bool) ([]Credential, error) {
 					}
 					if tunnel.VayDNS != nil {
 						value = tunnel.VayDNS.PublicKey
+					}
+					if tunnel.Soar != nil {
+						value = tunnel.Soar.PublicKey
 					}
 					if value != "" {
 						credentials = append(credentials, Credential{Label: tunnel.Tag + " public key", Path: spec.ConfigPath, Value: value})
@@ -869,6 +878,12 @@ func syncProjectRouteInternal(path string, spec Spec, currentSlipGateTLS, previo
 			return fmt.Errorf("THEFEED_LISTEN must remain on 127.0.0.1 so public traffic cannot bypass CottenRouter")
 		}
 		domains := appendCSV([]string{domain}, extra)
+		if spec.ID == "thefeed" {
+			domains, err = nativeTheFeedDomains(backendData)
+			if err != nil {
+				return err
+			}
+		}
 		found := false
 		for i := range cfg.Routes {
 			if cfg.Routes[i].Name == spec.ID {

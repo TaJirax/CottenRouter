@@ -312,7 +312,7 @@ func (c *Config) Validate() error {
 		route.Backend = backend.String()
 		if route.TCPBackend == "" {
 			route.TCPBackend = route.Backend
-		} else if route.TCPBackend != "disabled" {
+		} else if route.TCPBackend != "disabled" && route.TCPBackend != "udp" {
 			tcpBackend, err := net.ResolveTCPAddr("tcp", route.TCPBackend)
 			if err != nil {
 				return fmt.Errorf("route %q has invalid tcp_backend: %w", route.Name, err)

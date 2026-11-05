@@ -40,7 +40,10 @@ suffix wins.
   the router sent under that ID; otherwise it is dropped and the mapping stays
   open for the genuine reply.
 - Clear DNS-over-TCP/53 uses standard RFC 1035 framing and can pipeline queries
-  for different backends on one client connection.
+  for different backends on one client connection. A route's `tcp_backend`
+  accepts a TCP address, `disabled`, or `udp` to bridge framed TCP messages to
+  its UDP backend. Imported SlipGate DNS tunnels use `udp`, including Soar;
+  verification probes work over both public DNS transports.
 - CottenDNS DoT and DoH bind private loopback ports. Public TLS listeners route
   by SNI and pass encrypted bytes unchanged, preserving configured certificates,
   HTTP paths, and authentication. CottenDNS's current ACME switch checks its
@@ -52,12 +55,16 @@ suffix wins.
   are also in `DOMAIN`. Add each standby domain as an extra domain first; that
   puts it in `DOMAIN` and in the router's route. `ZONE_NS` needs nothing from
   the router: apex NS queries already reach CottenDNS.
-- SlipGate NaiveProxy and StunTLS can use the same TLS passthrough. Give every
-  SNI-routed service its own hostname and private loopback port. StunTLS has no
-  domain field in SlipGate's native config, so its hostname is entered in the
-  CottenRouter TLS route explicitly.
-- Add every thefeed main, extra, and chat domain to the same route. CottenRouter
-  does not interpret feed, messenger, media, signing, or relay payloads.
+- SlipGate NaiveProxy and StunTLS use TLS passthrough. NaiveProxy routes by
+  hostname; native StunTLS has no domain field and uses the listener's default
+  backend, including clients without SNI. Each backend gets a private loopback
+  port. Only one default backend can use a public TLS port.
+- Thefeed's main, extra, messenger and MTProto domains are automatically added
+  to the same route on install, update and Advanced save. Future native
+  `THEFEED_*_DOMAINS` lists are imported too. Native wizard selections and
+  MTProto quotas, media, signing and relay settings remain in
+  `/opt/thefeed/data/thefeed.env`; payloads pass through unchanged. Each feature
+  still needs the distinct delegated zones required by thefeed.
 - Soar and Soar 2.2 each use one delegated zone and a UDP-only listener. Each
   route sets `tcp_backend` to `disabled`; do not enable backend TCP, DoT, or DoH. All DNS
   question types under the zone reach Soar, including SOA and intermediate
@@ -65,13 +72,18 @@ suffix wins.
   clients and retain the private seed on the server. They can run together
   using distinct zones, ports, and seeds. See [Soar setup](soar.md).
 - When `slipgate_configs` is used, stop and disable `slipgate-dnsrouter` only.
-  Keep all `slipgate-{tag}`, SOCKS, SSH, NaiveProxy, and StunTLS services. HMAC
-  verification probes are answered using imported public keys/certificates.
+  Keep all `slipgate-{tag}`, SOCKS, SSH, NaiveProxy, StunTLS and enabled WARP
+  services. HMAC verification probes are answered using imported
+  DNSTT/VayDNS public keys and Slipstream certificates. Soar uses its native
+  Ed25519 handshake; its public key is also available through `cottenrouter keys`.
 
-The native SlipGate import covers all DNS transports and their verification
-material. The installer moves managed TLS services to private loopback
-listeners and creates their router SNI routes transactionally. See
-`cottenrouter.example.json` for NaiveProxy and StunTLS SNI routes.
+The native SlipGate import covers DNSTT, Slipstream, VayDNS, Soar and external
+DNS transports and their applicable verification material. Native public
+address, client links, users, outbound rules and transport tuning stay under
+SlipGate's control. Removed or disabled DNS tunnels lose their router routes
+on reintegration. The installer moves managed TLS services to private loopback
+listeners and creates their router TLS routes transactionally. See
+`cottenrouter.example.json` for TLS routing examples.
 
 ## Installer freshness
 

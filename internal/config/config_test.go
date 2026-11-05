@@ -133,6 +133,7 @@ func TestLoadImportsEnabledSlipGateDNSTunnels(t *testing.T) {
     {"tag":"dns","transport":"dnstt","domain":"dns.example","port":5310,"enabled":true},
     {"tag":"quic","transport":"slipstream","domain":"quic.example","port":5311,"enabled":true},
     {"tag":"kcp","transport":"vaydns","domain":"kcp.example","port":5312,"enabled":true},
+    {"tag":"soar","transport":"soar","domain":"soar.example","port":5314,"enabled":true,"soar":{"public_key":"base64-ed25519-public-key","allow_ports":"80,443"}},
     {"tag":"web","transport":"naive","domain":"web.example","port":443,"enabled":true},
     {"tag":"off","transport":"dnstt","domain":"off.example","port":5313,"enabled":false}
   ]
@@ -149,12 +150,15 @@ func TestLoadImportsEnabledSlipGateDNSTunnels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Routes) != 3 {
+	if len(cfg.Routes) != 4 {
 		t.Fatalf("got %d imported routes: %+v", len(cfg.Routes), cfg.Routes)
 	}
 	for _, route := range cfg.Routes {
-		if route.TCPBackend != "disabled" {
-			t.Fatalf("SlipGate UDP tunnel gained TCP backend: %+v", route)
+		if route.TCPBackend != "udp" {
+			t.Fatalf("SlipGate tunnel lost DNS TCP-to-UDP forwarding: %+v", route)
+		}
+		if route.Name == "slipgate:soar" && route.Verify != nil {
+			t.Fatalf("Soar's Ed25519 handshake was replaced by legacy HMAC verification: %+v", route)
 		}
 	}
 }

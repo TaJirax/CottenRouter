@@ -168,7 +168,7 @@ func stopNewSlipGateManagedServices(previous []managedServiceState, runner Runne
 
 func enabledSlipGateManagedServices(configData, unitData []byte) ([]string, error) {
 	var document slipGateTLSConfigDocument
-	if err := decodeStrictJSON(configData, &document); err != nil {
+	if err := decodeSlipGateEnvelopeJSON(configData, &document); err != nil {
 		return nil, fmt.Errorf("decode SlipGate config while selecting enabled services: %w", err)
 	}
 	if document.Tunnels == nil {
@@ -188,7 +188,7 @@ func enabledSlipGateManagedServices(configData, unitData []byte) ([]string, erro
 	selected := make(map[string]bool)
 	for index, raw := range document.Tunnels {
 		var tunnel slipGateTLSTunnelEnvelope
-		if err := decodeStrictJSON(raw, &tunnel); err != nil {
+		if err := decodeSlipGateEnvelopeJSON(raw, &tunnel); err != nil {
 			return nil, fmt.Errorf("decode SlipGate tunnel %d while selecting enabled services: %w", index, err)
 		}
 		if !tunnel.Enabled {
@@ -204,6 +204,17 @@ func enabledSlipGateManagedServices(configData, unitData []byte) ([]string, erro
 	}
 	if available["slipgate-socks5"] {
 		selected["slipgate-socks5"] = true
+	}
+	if len(document.Warp) > 0 {
+		var warp struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(document.Warp, &warp); err != nil {
+			return nil, fmt.Errorf("decode SlipGate WARP settings while selecting enabled services: %w", err)
+		}
+		if warp.Enabled && available["slipgate-warp"] {
+			selected["slipgate-warp"] = true
+		}
 	}
 	services := make([]string, 0, len(selected))
 	for service := range selected {

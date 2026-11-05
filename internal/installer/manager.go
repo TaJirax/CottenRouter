@@ -417,6 +417,13 @@ func (m Manager) Install(ctx context.Context, request Request, progress Progress
 		if err != nil {
 			return plan, fmt.Errorf("read installed config: %w", err)
 		}
+		if spec.ID == "thefeed" {
+			nativeRequest, nativeErr := theFeedNativeRequest(request, data)
+			if nativeErr != nil {
+				return plan, nativeErr
+			}
+			request = nativeRequest
+		}
 		configured, err := configure(spec, request, plan, data)
 		if err != nil {
 			return plan, err
@@ -1262,7 +1269,7 @@ func privateSlipGateUnit(unit []byte, port int, transport string) ([]byte, bool,
 
 func slipGateDNSTransport(value string) bool {
 	switch value {
-	case "dnstt", "slipstream", "vaydns", "external":
+	case "dnstt", "slipstream", "vaydns", "soar", "external":
 		return true
 	}
 	return false
@@ -1560,9 +1567,13 @@ func buildRouterConfig(path string, spec Spec, request Request, plan PortPlan, c
 		if err != nil {
 			return cfg, err
 		}
-		for _, route := range routes {
-			cfg.Routes = upsertRoute(cfg.Routes, route)
+		kept := cfg.Routes[:0]
+		for _, route := range cfg.Routes {
+			if !strings.HasPrefix(route.Name, "slipgate:") {
+				kept = append(kept, route)
+			}
 		}
+		cfg.Routes = append(kept, routes...)
 		if currentSlipGateTLS != nil {
 			previous := SlipGateTLSPlan{}
 			if previousSlipGateTLS != nil {
@@ -1577,6 +1588,18 @@ func buildRouterConfig(path string, spec Spec, request Request, plan PortPlan, c
 		domains := appendCSV([]string{request.Domain}, request.ExtraDomains)
 		if spec.Kind == ConfigEnv {
 			domains = appendCSV(domains, request.ChatDomains)
+			if data, readErr := os.ReadFile(spec.ConfigPath); readErr == nil {
+				configured, configureErr := configure(spec, request, plan, data)
+				if configureErr != nil {
+					return cfg, configureErr
+				}
+				domains, err = nativeTheFeedDomains(configured)
+				if err != nil {
+					return cfg, err
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return cfg, fmt.Errorf("read thefeed domain configuration: %w", readErr)
+			}
 		}
 		tcpBackend := "disabled"
 		if request.EnableTCP {

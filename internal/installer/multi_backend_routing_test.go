@@ -150,6 +150,40 @@ func TestSlipGateTunnelCannotReuseAnotherRoutesBackendPort(t *testing.T) {
 	}
 }
 
+func TestSlipGateReinstallRemovesDeletedAndDisabledDNSRoutes(t *testing.T) {
+	routerPath := routerConfigWithFirstBackend(t)
+	cfg, err := config.Load(routerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Routes = append(cfg.Routes,
+		config.Route{Name: "slipgate:deleted", Domains: []string{"deleted.example"}, Backend: "127.0.0.1:5310", TCPBackend: "udp"},
+		config.Route{Name: "slipgate:disabled", Domains: []string{"disabled.example"}, Backend: "127.0.0.1:5311", TCPBackend: "udp"})
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(routerPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := FindSpec("slipgate")
+	spec.ConfigPath = filepath.Join(t.TempDir(), "config.json")
+	data = []byte(`{"tunnels":[{"tag":"disabled","transport":"dnstt","domain":"disabled.example","port":5311,"enabled":false},{"tag":"soar","transport":"soar","domain":"soar.example","port":5312,"enabled":true}]}`)
+	if err := os.WriteFile(spec.ConfigPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRouterConfig(routerPath, spec, Request{}, PortPlan{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(routerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Routes) != 2 || cfg.Routes[0].Name != "cottendns" || cfg.Routes[1].Name != "slipgate:soar" || cfg.Routes[1].TCPBackend != "udp" {
+		t.Fatalf("reinstalled routes = %+v", cfg.Routes)
+	}
+	if len(cfg.TLSListeners) != 2 || cfg.AdminListen != "127.0.0.1:9090" {
+		t.Fatalf("reinstall changed unrelated router settings: %+v", cfg)
+	}
+}
+
 // A domain another route owns must be refused before the upstream installer
 // runs; the router used to stay down for the whole doomed install.
 func TestPreflightRejectsDomainOwnedByAnotherRouteWithoutWriting(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 )
 
 var slipGateDNSTransports = map[string]bool{
-	"dnstt": true, "slipstream": true, "vaydns": true, "external": true,
+	"dnstt": true, "slipstream": true, "vaydns": true, "soar": true, "external": true,
 }
 
 type slipGateConfig struct {
@@ -55,10 +55,12 @@ func LoadSlipGateRoutes(path string) ([]Route, error) {
 			return nil, fmt.Errorf("SlipGate DNS tunnel %q has invalid tag, domain, or port", tunnel.Tag)
 		}
 		route := Route{
-			Name:       "slipgate:" + tunnel.Tag,
-			Domains:    []string{tunnel.Domain},
-			Backend:    fmt.Sprintf("127.0.0.1:%d", tunnel.Port),
-			TCPBackend: "disabled",
+			Name:    "slipgate:" + tunnel.Tag,
+			Domains: []string{tunnel.Domain},
+			Backend: fmt.Sprintf("127.0.0.1:%d", tunnel.Port),
+			// SlipGate accepts DNS over TCP and forwards the individual DNS
+			// messages to its UDP-only transports, including Soar.
+			TCPBackend: "udp",
 		}
 		switch tunnel.Transport {
 		case "dnstt":
@@ -93,7 +95,7 @@ func NewFromSlipGate(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{ListenUDP: defaultListen, Routes: routes}
+	cfg := Config{ListenUDP: defaultListen, ListenTCP: defaultListen, Routes: routes}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
