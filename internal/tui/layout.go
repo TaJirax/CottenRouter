@@ -198,7 +198,7 @@ func (m Model) installView(width int) string {
 		rows = append(rows, cottenMaxGuidance(width-4)...)
 	}
 	if spec.Kind == installer.ConfigPanel {
-		rows = append(rows, "WhiteDNS account panel; separate from the older Soar 2.2.", "Panel 0.5.1 remains BETA: enter its downloaded CI archive path.", "Blank follows stable releases; incompatible older builds are refused.", "UDP/TCP DNS stays private. Open administration with SSH forwarding.", "Choose the admin password in the terminal on first install.", "Updates preserve users, keys, quotas and explicit limits.")
+		rows = append(rows, "WhiteDNS account panel; separate from the older Soar 2.2.", "Latest stable Panel is selected automatically for this architecture.", "A legacy beta archive is optional and must be selected explicitly.", "UDP/TCP DNS stays private. Open administration with SSH forwarding.", "Choose the admin password in the terminal on first install.", "Updates preserve users, keys, quotas and explicit limits.")
 	}
 	if version := m.projectStates[spec.ID].Version; version != "" {
 		rows = append(rows, fitLine("Installed release: "+version, width-4))
@@ -223,7 +223,7 @@ func (m Model) formView(width int) string {
 		heading += fmt.Sprintf(" · %d/%d", m.batchStep, m.batchTotal)
 	}
 	rows := []string{title.Render(heading), "Use your delegated domain. Private ports are planned automatically.", ""}
-	labels := map[string]string{"domain": "Tunnel domain", "extra": "Extra domains", "port": "Private port", "capacity": "Capacity", "chat": "Chat domains", "dot": "DoT hostname", "doh": "DoH hostname", "panel-bundle": "Beta CI archive"}
+	labels := map[string]string{"domain": "Tunnel domain", "extra": "Extra domains", "port": "Private port", "capacity": "Capacity", "chat": "Chat domains", "dot": "DoT hostname", "doh": "DoH hostname", "panel-bundle": "Legacy beta"}
 	for i, item := range m.fields {
 		label := fmt.Sprintf("%-14s", labels[item.key])
 		if i == m.fieldIndex {
@@ -288,7 +288,7 @@ func (m Model) guideView(width int) string {
 		"thefeed needs a source; SlipGate uses its native wizard.",
 		"Soar and Soar 2.2 need different zones.",
 		"Soar 2.2: WhiteDNS, older Lantern v0.2.2, amd64.",
-		"WhiteDNS Panel: 0.5.1 beta requires its CI archive; stable updates are separate.",
+		"WhiteDNS Panel: latest stable by default; legacy beta archive is optional.",
 		"DNS: suffix routing. DoT/DoH: TLS SNI.",
 		"Existing panels keep ports; conflicts are reported.",
 	} {

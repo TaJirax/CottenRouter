@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,15 @@ import (
 // Panel release or selected by automatic stable release discovery.
 const panelBetaDigest = "59f64f2de6a5fbbc652bd93e0cd9e2ab4675816b9cbf27a1324f66eceab8f90b"
 const panelBetaBuild = "https://github.com/WhiteDNS/Soar-Server/actions/runs/39619905951/artifacts/12354244178"
+
+const (
+	maxPanelArchiveBytes = 96 << 20
+	maxPanelBundleBytes  = 256 << 20
+	maxPanelMemberBytes  = 96 << 20
+)
+
+var panelTagRE = regexp.MustCompile(`^panel-v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+var panelAssetRE = regexp.MustCompile(`^soar-panel-([0-9]+\.[0-9]+\.[0-9]+)-linux-(amd64|arm64)\.tar\.gz$`)
 
 func panelBetaProject() catalog.Project {
 	for _, project := range catalog.Projects() {
@@ -65,13 +75,28 @@ func readPanelBetaBundle(name string) ([]byte, []byte, error) {
 }
 
 func panelAsset(tag string) (string, error) {
-	if !regexp.MustCompile(`^panel-v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(tag) {
+	return panelAssetForArch(tag, runtime.GOARCH)
+}
+
+func panelAssetForArch(tag, arch string) (string, error) {
+	if !panelTagRE.MatchString(tag) {
 		return "", fmt.Errorf("invalid panel release tag")
 	}
-	return "soar-panel-" + strings.TrimPrefix(tag, "panel-v") + "-linux-amd64.tar.gz", nil
+	if arch != "amd64" && arch != "arm64" {
+		return "", fmt.Errorf("WhiteDNS Panel releases require Linux amd64 or arm64")
+	}
+	return "soar-panel-" + strings.TrimPrefix(tag, "panel-v") + "-linux-" + arch + ".tar.gz", nil
 }
 
 func verifyPanelBundle(archive, checksum []byte, asset string) (map[string][]byte, error) {
+	match := panelAssetRE.FindStringSubmatch(asset)
+	if len(match) != 3 {
+		return nil, fmt.Errorf("invalid panel archive name")
+	}
+	version, arch := match[1], match[2]
+	if len(archive) > maxPanelArchiveBytes {
+		return nil, fmt.Errorf("panel archive exceeds its size limit")
+	}
 	digest := sha256.Sum256(archive)
 	fields := strings.Fields(string(checksum))
 	if len(fields) != 2 || !strings.EqualFold(fields[0], hex.EncodeToString(digest[:])) || strings.TrimPrefix(fields[1], "*") != asset {
@@ -82,7 +107,7 @@ func verifyPanelBundle(archive, checksum []byte, asset string) (map[string][]byt
 		return nil, err
 	}
 	defer gz.Close()
-	limited := &io.LimitedReader{R: gz, N: (128 << 20) + 1}
+	limited := &io.LimitedReader{R: gz, N: maxPanelBundleBytes + 1}
 	tr := tar.NewReader(limited)
 	prefix := strings.TrimSuffix(asset, ".tar.gz") + "/"
 	files := map[string][]byte{}
@@ -103,7 +128,7 @@ func verifyPanelBundle(archive, checksum []byte, asset string) (map[string][]byt
 		if h.Typeflag == tar.TypeDir {
 			continue
 		}
-		if h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > 32<<20 {
+		if h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > maxPanelMemberBytes {
 			return nil, fmt.Errorf("unsupported panel archive member %q", name)
 		}
 		data, err := io.ReadAll(tr)
@@ -134,12 +159,96 @@ func verifyPanelBundle(archive, checksum []byte, asset string) (map[string][]byt
 			return nil, fmt.Errorf("panel archive member %s is absent from manifest", name)
 		}
 	}
-	for _, name := range []string{"panel-install.sh", "panel-security.sh", "bin/linux-amd64/soar-panel", "bin/linux-amd64/soar-panel-ops", "bin/linux-amd64/soar-check", "SOURCE-VERSIONS.txt"} {
+	binDir := "bin/linux-" + arch + "/"
+	for _, name := range []string{"panel-install.sh", "panel-security.sh", binDir + "soar-panel", binDir + "soar-panel-ops", binDir + "soar-check", "SOURCE-VERSIONS.txt"} {
 		if len(files[name]) == 0 || !verified[name] {
 			return nil, fmt.Errorf("panel bundle is missing %s", name)
 		}
 	}
+	if bundleArch, ok := files["ARCH"]; ok {
+		if strings.TrimSpace(string(bundleArch)) != arch {
+			return nil, fmt.Errorf("panel archive architecture differs from selected platform %s", arch)
+		}
+	} else if modernPanelCLI("panel-v" + version) {
+		return nil, fmt.Errorf("current panel archive is missing its architecture declaration")
+	}
+	for _, name := range []string{"soar-panel", "soar-panel-ops", "soar-check"} {
+		if err := verifyPanelELF(files[binDir+name], arch); err != nil {
+			return nil, fmt.Errorf("panel archive %s: %w", name, err)
+		}
+	}
 	return files, nil
+}
+
+func verifyPanelELF(data []byte, arch string) error {
+	machine := uint16(62)
+	if arch == "arm64" {
+		machine = 183
+	}
+	if len(data) < 20 || !bytes.Equal(data[:6], []byte{0x7f, 'E', 'L', 'F', 2, 1}) || binary.LittleEndian.Uint16(data[18:20]) != machine {
+		return fmt.Errorf("executable is not Linux %s ELF", arch)
+	}
+	return nil
+}
+
+// 0.14.4 is the first modern CLI verified by this adapter. It no longer has
+// the beta's capabilities subcommand; earlier versions retain that safety gate.
+func modernPanelCLI(tag string) bool {
+	parts := panelTagRE.FindStringSubmatch(tag)
+	if len(parts) != 4 {
+		return false
+	}
+	minimum := []uint64{0, 14, 4}
+	for index, part := range parts[1:] {
+		n, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return false
+		}
+		if n != minimum[index] {
+			return n > minimum[index]
+		}
+	}
+	return true
+}
+
+func (m Manager) verifyPanelRuntime(ctx context.Context, candidate, tag string) error {
+	version, err := m.Runner.Output(ctx, candidate, "version")
+	if err != nil || strings.TrimSpace(string(version)) != strings.TrimPrefix(tag, "panel-v") {
+		return fmt.Errorf("panel binary version differs from selected release %s", tag)
+	}
+	if !modernPanelCLI(tag) {
+		features, err := m.Runner.Output(ctx, candidate, "capabilities")
+		found := false
+		for _, feature := range strings.Fields(string(features)) {
+			found = found || feature == "account-session-limits"
+		}
+		if err == nil && found {
+			return nil
+		}
+		return fmt.Errorf("the selected Panel lacks the required account-session-limits capability; no service was stopped. For explicit legacy beta testing, download and unzip %s and pass --panel-beta-bundle /path/to/soar-panel-0.5.1-linux-amd64.tar.gz", panelBetaBuild)
+	}
+	for _, contract := range []struct {
+		command string
+		flags   []string
+	}{
+		{"run", []string{"db", "dns-listen", "listen", "ops-socket"}},
+		{"init", []string{"db", "zone", "admin", "password-file"}},
+		{"health", []string{"db", "listen"}},
+		{"server-info", []string{"db"}},
+	} {
+		// Go's flag help exits nonzero through the native main function. Inspect
+		// its explicit usage/options rather than treating that exit as failure.
+		help, _ := m.Runner.Output(ctx, candidate, contract.command, "--help")
+		if !strings.Contains(string(help), "Usage of "+contract.command+":") {
+			return fmt.Errorf("Panel %s does not expose the required %s CLI contract; no service was stopped", tag, contract.command)
+		}
+		for _, name := range contract.flags {
+			if !regexp.MustCompile(`(?m)^\s+-` + regexp.QuoteMeta(name) + `(?:\s|$)`).Match(help) {
+				return fmt.Errorf("Panel %s is missing required %s option --%s; no service was stopped", tag, contract.command, name)
+			}
+		}
+	}
+	return nil
 }
 
 func configurePanel(request Request, data []byte) ([]byte, error) {
@@ -157,6 +266,9 @@ func configurePanel(request Request, data []byte) ([]byte, error) {
 }
 
 func validatePanelConfig(data []byte) error {
+	if err := validatePanelZone(envValue(data, "PANEL_ZONE")); err != nil {
+		return err
+	}
 	for _, key := range []string{"PANEL_DNS_LISTEN", "PANEL_HTTP_LISTEN"} {
 		host, p, err := net.SplitHostPort(envValue(data, key))
 		n, e := strconv.Atoi(p)
@@ -164,7 +276,123 @@ func validatePanelConfig(data []byte) error {
 			return fmt.Errorf("%s must use a private loopback port between 1024 and 65535", key)
 		}
 	}
+	_, err := panelRouteDomains(data)
+	return err
+}
+
+func validatePanelZone(zone string) error {
+	if len(zone) < 3 || len(zone) > 24 || !strings.Contains(zone, ".") {
+		return fmt.Errorf("WhiteDNS Panel zones must be ASCII domains of 3-24 characters")
+	}
+	for _, label := range strings.Split(zone, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("invalid WhiteDNS Panel zone %q", zone)
+		}
+		for _, character := range label {
+			if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-') {
+				return fmt.Errorf("invalid WhiteDNS Panel zone %q", zone)
+			}
+		}
+	}
 	return nil
+}
+
+// panelRouteDomains is a cached native serving-zone list. The identity base
+// remains in PANEL_ZONE even when the operator stops serving that delegation.
+func panelRouteDomains(data []byte) ([]string, error) {
+	base := envValue(data, "PANEL_ZONE")
+	if err := validatePanelZone(base); err != nil {
+		return nil, err
+	}
+	cached := envValue(data, "PANEL_TUNNEL_DOMAINS")
+	domains := strings.Split(cached, ",")
+	if cached == "" {
+		domains = []string{base}
+	}
+	if len(domains) > 8 {
+		return nil, fmt.Errorf("WhiteDNS Panel supports at most eight serving zones")
+	}
+	seen := make(map[string]bool)
+	for index, domain := range domains {
+		domain = strings.TrimSpace(domain)
+		domains[index] = domain
+		if err := validatePanelZone(domain); err != nil {
+			return nil, err
+		}
+		if seen[domain] {
+			return nil, fmt.Errorf("duplicate WhiteDNS Panel serving zone %q", domain)
+		}
+		for previous := range seen {
+			if strings.HasSuffix(previous, "."+domain) || strings.HasSuffix(domain, "."+previous) {
+				return nil, fmt.Errorf("WhiteDNS Panel serving zones cannot be nested")
+			}
+		}
+		seen[domain] = true
+	}
+	return domains, nil
+}
+
+// refreshPanelTunnelDomains uses the native non-secret export. Callers must
+// stop the service first: the CLI opens its database exclusively. No database
+// format, account settings or keys are interpreted or changed by CottenRouter.
+func (m Manager) refreshPanelTunnelDomains(ctx context.Context, spec Spec, data []byte) ([]byte, error) {
+	binary := filepath.Join(spec.WorkDir, "whitedns-panel")
+	version, err := m.Runner.Output(ctx, binary, "version")
+	if err != nil {
+		return nil, fmt.Errorf("read installed Panel version before refreshing zones: %w", err)
+	}
+	if !modernPanelCLI("panel-v" + strings.TrimSpace(string(version))) {
+		return setEnv(data, "PANEL_TUNNEL_DOMAINS", envValue(data, "PANEL_ZONE")), nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	exported, err := m.Runner.Output(ctx, binary, "server-info", "--db", filepath.Join(spec.WorkDir, "panel.db"))
+	if err != nil {
+		return nil, fmt.Errorf("read native Panel serving zones while its service is stopped: %w", err)
+	}
+	return panelConfigWithNativeDomains(data, exported)
+}
+
+func panelConfigWithNativeDomains(data, exported []byte) ([]byte, error) {
+	if len(exported) > 1<<20 {
+		return nil, fmt.Errorf("native Panel server-info export exceeds its size limit")
+	}
+	var document struct {
+		Settings struct {
+			BaseZone    string   `json:"base_zone"`
+			TunnelZones []string `json:"tunnel_zones"`
+			PrimaryZone string   `json:"primary_zone"`
+		} `json:"settings"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(exported))
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode native Panel serving zones: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("native Panel server-info contains trailing data")
+	}
+	if document.Settings.BaseZone != envValue(data, "PANEL_ZONE") {
+		return nil, fmt.Errorf("native Panel identity base zone differs from PANEL_ZONE; preserve its existing identity")
+	}
+	values := document.Settings.TunnelZones
+	if len(values) == 0 {
+		values = []string{document.Settings.BaseZone}
+	}
+	configured := setEnv(data, "PANEL_TUNNEL_DOMAINS", strings.Join(values, ","))
+	domains, err := panelRouteDomains(configured)
+	if err != nil {
+		return nil, err
+	}
+	if primary := document.Settings.PrimaryZone; primary != "" {
+		found := false
+		for _, domain := range domains {
+			found = found || domain == primary
+		}
+		if !found {
+			return nil, fmt.Errorf("native Panel primary zone is absent from its serving zones")
+		}
+	}
+	return configured, nil
 }
 
 func panelUnit(spec Spec) string {
@@ -205,8 +433,11 @@ func requirePanelOwnership(spec Spec) error {
 }
 
 func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, plan PortPlan, project catalog.Project, progress Progress) (result error) {
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		return fmt.Errorf("WhiteDNS Panel releases require Linux amd64")
+	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		return fmt.Errorf("WhiteDNS Panel releases require Linux amd64 or arm64")
+	}
+	if request.PanelBetaBundle != "" && runtime.GOARCH != "amd64" {
+		return fmt.Errorf("the pinned WhiteDNS Panel 0.5.1 beta bundle requires Linux amd64; use the current stable release on arm64")
 	}
 	if err := requirePanelOwnership(spec); err != nil {
 		return err
@@ -269,7 +500,7 @@ func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, p
 	} else {
 		base := "https://github.com/WhiteDNS/Soar-Server/releases/download/" + project.ReleaseTag + "/"
 		progress("Downloading current stable WhiteDNS Panel " + project.ReleaseTag + " and verifying archive/runtime checksums")
-		archive, err = m.downloadLimited(ctx, base+asset, 32<<20)
+		archive, err = m.downloadLimited(ctx, base+asset, maxPanelArchiveBytes)
 		if err == nil {
 			checksum, err = m.download(ctx, base+asset+".sha256")
 		}
@@ -282,16 +513,12 @@ func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, p
 		return err
 	}
 	candidate := filepath.Join(staging, "whitedns-panel")
-	if err := os.WriteFile(candidate, files["bin/linux-amd64/soar-panel"], 0755); err != nil {
+	panelBinary := files["bin/linux-"+runtime.GOARCH+"/soar-panel"]
+	if err := os.WriteFile(candidate, panelBinary, 0755); err != nil {
 		return err
 	}
-	version, err := m.Runner.Output(ctx, candidate, "version")
-	if err != nil || strings.TrimSpace(string(version)) != strings.TrimPrefix(project.ReleaseTag, "panel-v") {
-		return fmt.Errorf("panel binary version differs from selected release %s", project.ReleaseTag)
-	}
-	features, err := m.Runner.Output(ctx, candidate, "capabilities")
-	if err != nil || !strings.Contains(string(features), "account-session-limits") {
-		return fmt.Errorf("the current stable Panel lacks the required session fixes; no service was stopped. For explicit beta testing, download and unzip %s and pass --panel-beta-bundle /path/to/soar-panel-0.5.1-linux-amd64.tar.gz; stable installation will become available when upstream publishes a compatible release", panelBetaBuild)
+	if err := m.verifyPanelRuntime(ctx, candidate, project.ReleaseTag); err != nil {
+		return err
 	}
 	db := filepath.Join(spec.WorkDir, "panel.db")
 	if err := rejectSymlinkComponents(db); err != nil {
@@ -352,7 +579,7 @@ func (m Manager) installPanel(ctx context.Context, spec Spec, request Request, p
 	}
 	mutated = true
 	binary := filepath.Join(spec.WorkDir, "whitedns-panel")
-	if err := atomicWrite(binary, files["bin/linux-amd64/soar-panel"], 0755); err != nil {
+	if err := atomicWrite(binary, panelBinary, 0755); err != nil {
 		return err
 	}
 	if _, err := os.Stat(db); os.IsNotExist(err) {
@@ -386,6 +613,10 @@ printf '%s' "$password" > "$password_file"
 			}
 		}
 	} else if err != nil {
+		return err
+	}
+	configured, err = m.refreshPanelTunnelDomains(ctx, spec, configured)
+	if err != nil {
 		return err
 	}
 	if err := atomicWrite(spec.ConfigPath, configured, 0600); err != nil {

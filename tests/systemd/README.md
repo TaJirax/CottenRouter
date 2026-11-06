@@ -131,6 +131,41 @@ replies through public UDP and TCP. Systemd/package/download boundaries are
 shimmed; external Telegram login, MTProto connections, media downloads, public
 DNS delegation and real systemd activation remain separate integration checks.
 
+The additional Telegram transport regression uses the real Feed v0.42.0 client
+and server with a namespace-local test DC, without account authentication or a
+public Telegram connection:
+
+```bash
+COTTENROUTER_NAMESPACE_TEST=1 \
+  COTTENROUTER_BINARY=/path/to/cottenrouter \
+  THEFEED_BINARY=/path/to/thefeed-server-linux-amd64 \
+  THEFEED_SOURCE=/path/to/thefeed-v0.42.0 \
+  bash scripts/native-thefeed-telegram-test.sh
+```
+
+Feed's source requires its own compatible Go toolchain to build the test client;
+the Router module is unchanged. The probe checks signed discovery, sealed
+handshakes and bidirectional streams in twelve direct/routed encoding/cell-budget
+cases. It does not validate real Telegram login or public-network reachability.
+
+For the current stable WhiteDNS Panel, download its native AMD64 archive and
+checksum, then run:
+
+```bash
+COTTENROUTER_NAMESPACE_TEST=1 \
+  PANEL_ARCHIVE=/path/to/soar-panel-0.14.4-linux-amd64.tar.gz \
+  PANEL_CHECKSUM=/path/to/soar-panel-0.14.4-linux-amd64.tar.gz.sha256 \
+  bash scripts/native-panel-installer-contract-test.sh
+```
+
+This invokes real Router install/update/configure/Advanced operations against the
+published Panel bundle. It checks native account identities, keys, quotas and
+per-engine limits, serving-zone changes, live private DNS UDP/TCP and rollback
+after an injected route conflict. Release transport and systemd are substituted
+inside private namespaces; generated service commands run actual processes.
+`scripts/native-panel-contract-test.sh` separately compares native DNS replies
+with routed replies using a supplied Router binary.
+
 Use the real CLI/native installers in a WSL terminal:
 
 ```bash

@@ -62,3 +62,9 @@ coverage.txt
 !/tests/systemd/
 /tests/systemd/*
 !/tests/systemd/feed-slipgate-install-test.py
+
+# Current WhiteDNS Panel integration regressions.
+!/internal/catalog/panel_release_test.go
+!/internal/installer/panel_current_test.go
+!/internal/installer/panel_routes_test.go
+!/internal/installer/panel_native_contract_test.go

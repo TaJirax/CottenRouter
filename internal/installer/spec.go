@@ -119,8 +119,13 @@ func (r *Request) Validate() (Spec, error) {
 	if r.PanelBetaBundle != "" && spec.Kind != ConfigPanel {
 		return Spec{}, fmt.Errorf("--panel-beta-bundle is available only for WhiteDNS Panel")
 	}
-	if spec.Kind == ConfigPanel && (len(r.Domain) > 24 || r.ExtraDomains != "" || r.ChatDomains != "") {
-		return Spec{}, fmt.Errorf("WhiteDNS Panel requires one delegated base zone of at most 24 characters; manage its accounts in the panel")
+	if spec.Kind == ConfigPanel {
+		if err := validatePanelZone(r.Domain); err != nil {
+			return Spec{}, err
+		}
+		if r.ExtraDomains != "" || r.ChatDomains != "" {
+			return Spec{}, fmt.Errorf("configure WhiteDNS Panel serving zones and accounts in the native panel; --domain retains its identity base zone")
+		}
 	}
 	if spec.Kind == ConfigSoar && (r.ExtraDomains != "" || r.ChatDomains != "") {
 		return Spec{}, fmt.Errorf("Soar serves one delegated zone; extra and chat domains are not supported")

@@ -336,18 +336,38 @@ func (m Manager) Configure(ctx context.Context, request Request, progress Progre
 		}
 	}
 	mutated := false
+	panelStopped := false
 	rollback := func() {
-		if !mutated {
+		if !mutated && !panelStopped {
 			return
 		}
-		_ = atomicWrite(spec.ConfigPath, data, 0600)
-		_ = atomicWrite(request.RouterConfig, previousRouter, 0640)
+		if mutated {
+			_ = atomicWrite(spec.ConfigPath, data, 0600)
+			_ = atomicWrite(request.RouterConfig, previousRouter, 0640)
+		}
 		if spec.Kind != ConfigSlipGate {
 			restoreManagedServicesExact([]managedServiceState{serviceState}, m.Runner)
 		}
-		_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		if mutated {
+			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", "cottenrouter"}, "/", false)
+		}
+	}
+	if spec.Kind == ConfigPanel {
+		// The native settings export opens the account database offline. Stop
+		// only this managed service and restore its exact state on failure.
+		panelStopped = true
+		if err := m.Runner.Run(ctx, "systemctl", []string{"stop", spec.Service}, "/", false); err != nil {
+			rollback()
+			return plan, fmt.Errorf("stop Panel before reading tunnel zones: %w", err)
+		}
+		configured, err = m.refreshPanelTunnelDomains(ctx, spec, configured)
+		if err != nil {
+			rollback()
+			return plan, err
+		}
 	}
 	if err := atomicWrite(spec.ConfigPath, configured, 0600); err != nil {
+		rollback()
 		return plan, err
 	}
 	mutated = true
@@ -617,6 +637,10 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 	}
 	var previousSlipGateTLSPlan, slipGateTLSPlan SlipGateTLSPlan
 	var previousSlipGateTLSServiceStates []managedServiceState
+	var previousPanelServiceState managedServiceState
+	if spec.Kind == ConfigPanel {
+		previousPanelServiceState = snapshotManagedServiceState(ctx, m.Runner, spec.Service)
+	}
 	if spec.Kind == ConfigSlipGate {
 		listeners, err := m.Scan(ctx)
 		if err != nil {
@@ -651,6 +675,8 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 			_ = m.Runner.Run(context.Background(), "systemctl", []string{"daemon-reload"}, "/", false)
 			restoreManagedServicesExact(previousSlipGateTLSServiceStates, m.Runner)
 			_ = m.Runner.Run(context.Background(), "systemctl", []string{"disable", "--now", "slipgate-dnsrouter"}, "/", false)
+		} else if spec.Kind == ConfigPanel {
+			restoreManagedServicesExact([]managedServiceState{previousPanelServiceState}, m.Runner)
 		} else {
 			_ = m.Runner.Run(context.Background(), "systemctl", []string{"restart", spec.Service}, "/", false)
 		}
@@ -697,6 +723,9 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 			return fmt.Errorf("EDITOR must be one executable path without arguments")
 		}
 		if err := m.Runner.Run(ctx, editor, []string{spec.ConfigPath}, spec.WorkDir, true); err != nil {
+			if spec.Kind == ConfigPanel {
+				return fail(err)
+			}
 			return err
 		}
 	}
@@ -707,6 +736,19 @@ func (m Manager) Advanced(ctx context.Context, projectID, routerConfig string) e
 		}
 		if envValue(current, "PANEL_ZONE") != envValue(backendPrevious, "PANEL_ZONE") {
 			return fail(fmt.Errorf("preserve the panel base zone; changing it invalidates account profiles"))
+		}
+		if err := validatePanelConfig(current); err != nil {
+			return fail(err)
+		}
+		if err := m.Runner.Run(ctx, "systemctl", []string{"stop", spec.Service}, "/", false); err != nil {
+			return fail(fmt.Errorf("stop Panel before reading tunnel zones: %w", err))
+		}
+		current, err = m.refreshPanelTunnelDomains(ctx, spec, current)
+		if err != nil {
+			return fail(err)
+		}
+		if err := atomicWrite(spec.ConfigPath, current, 0600); err != nil {
+			return fail(err)
 		}
 	}
 	if err := syncProjectRouteWithSlipGateTLS(routerConfig, spec, slipGateTLSPlan, previousSlipGateTLSPlan); err != nil {
@@ -880,6 +922,11 @@ func syncProjectRouteInternal(path string, spec Spec, currentSlipGateTLS, previo
 		domains := appendCSV([]string{domain}, extra)
 		if spec.ID == "thefeed" {
 			domains, err = nativeTheFeedDomains(backendData)
+			if err != nil {
+				return err
+			}
+		} else if spec.Kind == ConfigPanel {
+			domains, err = panelRouteDomains(backendData)
 			if err != nil {
 				return err
 			}

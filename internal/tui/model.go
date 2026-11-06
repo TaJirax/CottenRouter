@@ -520,7 +520,7 @@ func (m *Model) beginForm(operation string) {
 	}
 	m.fields = append(m.fields, newField("port", "Private DNS port", strconv.Itoa(port)))
 	if spec.Kind == installer.ConfigPanel && m.operation != "configure" {
-		m.fields = append(m.fields, newField("panel-bundle", "Beta CI archive path (blank: stable)", ""))
+		m.fields = append(m.fields, newField("panel-bundle", "Legacy beta archive (blank: latest stable)", ""))
 	}
 	if spec.ID == "cottendns" {
 		m.fields = append(m.fields, newField("capacity", "Session capacity (keep / expanded)", "keep"))

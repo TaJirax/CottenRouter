@@ -1600,6 +1600,19 @@ func buildRouterConfig(path string, spec Spec, request Request, plan PortPlan, c
 			} else if !errors.Is(readErr, os.ErrNotExist) {
 				return cfg, fmt.Errorf("read thefeed domain configuration: %w", readErr)
 			}
+		} else if spec.Kind == ConfigPanel {
+			if data, readErr := os.ReadFile(spec.ConfigPath); readErr == nil {
+				configured, configureErr := configurePanel(request, data)
+				if configureErr != nil {
+					return cfg, configureErr
+				}
+				domains, err = panelRouteDomains(configured)
+				if err != nil {
+					return cfg, err
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return cfg, fmt.Errorf("read Panel tunnel domains: %w", readErr)
+			}
 		}
 		tcpBackend := "disabled"
 		if request.EnableTCP {

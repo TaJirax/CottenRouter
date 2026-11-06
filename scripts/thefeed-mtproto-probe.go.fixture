@@ -1,0 +1,154 @@
+// Copied into a disposable upstream Feed module by native-thefeed-telegram-test.sh.
+// The router module does not depend on Feed or on its Go toolchain version.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"sync/atomic"
+	"time"
+
+	"github.com/sartoopjj/thefeed/internal/client"
+	"github.com/sartoopjj/thefeed/internal/protocol"
+)
+
+type result struct {
+	Resolver   string `json:"resolver"`
+	FeedDomain string `json:"feed_domain"`
+	Encoding   string `json:"query_encoding"`
+	Budget     int    `json:"cell_plaintext_budget"`
+	Chunk      int    `json:"stream_chunk"`
+	Bytes      int    `json:"stream_bytes"`
+	Queries    uint64 `json:"sealed_cell_queries"`
+	SHA256     string `json:"stream_sha256"`
+	Verified   bool   `json:"signed_capability_verified"`
+	Exact      bool   `json:"byte_exact_echo"`
+}
+
+func main() {
+	pub := flag.String("pubkey", "", "Native Feed server signing public key")
+	flag.Parse()
+	if *pub == "" {
+		panic("pubkey is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	var results []result
+	for _, resolver := range []string{"127.0.0.1:5304", "127.0.0.1:53"} {
+		for _, mode := range []protocol.QueryEncoding{protocol.QuerySingleLabel, protocol.QueryMultiLabel} {
+			for _, budget := range []int{8, protocol.ChatCellPlainSize, protocol.ChatCellPlainMax} {
+				r, err := check(ctx, resolver, *pub, mode, budget)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				results = append(results, r)
+			}
+		}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(results); err != nil {
+		panic(err)
+	}
+}
+
+func check(parent context.Context, resolver, pub string, mode protocol.QueryEncoding, budget int) (result, error) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	domain, encoding := "feed.native.test", "single-label-base32"
+	if mode == protocol.QueryMultiLabel {
+		domain, encoding = "alias.native.test", "multi-label-hex"
+	}
+	r := result{Resolver: resolver, FeedDomain: domain, Encoding: encoding, Budget: budget}
+	f, err := client.NewFetcher(domain, "native-telegram-test-only", []string{resolver})
+	if err != nil {
+		return r, err
+	}
+	if err = f.SetServerPublicKey(pub); err != nil {
+		return r, err
+	}
+	f.SetActiveResolvers([]string{resolver})
+	f.SetScatter(1)
+	f.SetTimeout(2 * time.Second)
+	f.SetNoiseDisabled(true)
+	f.SetRateLimit(0)
+	f.SetQueryMode(mode)
+	f.Start(ctx)
+	var info *protocol.MTPInfo
+	for attempt := 0; attempt < 20; attempt++ {
+		info, err = client.FetchMTProtoInfo(ctx, f)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return r, fmt.Errorf("%s signed discovery: %w", resolver, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		return r, fmt.Errorf("%s signed discovery: %w", resolver, err)
+	}
+	domains := append([]string(nil), info.Domains...)
+	sort.Strings(domains)
+	if !info.Enabled || fmt.Sprint(domains) != "[mtp.feed.native.test mtp2.native.test]" {
+		return r, fmt.Errorf("unexpected signed tunnel capability: enabled=%v domains=%v", info.Enabled, domains)
+	}
+	r.Verified = true
+	session, err := client.NewMTProtoSessionOn(f, info, budget)
+	if err != nil {
+		return r, err
+	}
+	var queries atomic.Uint64
+	session.SetOnQuery(func() { queries.Add(1) })
+	if err = session.Handshake(ctx); err != nil {
+		return r, fmt.Errorf("%s mode=%s budget=%d handshake: %w", resolver, encoding, budget, err)
+	}
+	chunk := min(session.Chunk(), protocol.MTPChunkSize(budget))
+	conn, err := client.DialTunnel(ctx, session.Exchange, 2, client.TunnelOptions{Chunk: chunk, Window: 4, IdlePoll: 5 * time.Millisecond, MaxIdlePoll: 50 * time.Millisecond})
+	if err != nil {
+		return r, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(25 * time.Second))
+	var sent, received []byte
+	for _, size := range []int{64, 4096} {
+		body := make([]byte, size)
+		if _, err = rand.Read(body); err != nil {
+			return r, err
+		}
+		words := size / 4
+		frame := []byte{byte(words)}
+		if words >= 127 {
+			frame = []byte{0x7f, byte(words), byte(words >> 8), byte(words >> 16)}
+		}
+		frame = append(frame, body...)
+		if _, err = conn.Write(frame); err != nil {
+			return r, fmt.Errorf("%s budget=%d write: %w", resolver, budget, err)
+		}
+		got := make([]byte, len(frame))
+		if _, err = io.ReadFull(conn, got); err != nil {
+			return r, fmt.Errorf("%s budget=%d read: %w", resolver, budget, err)
+		}
+		if !bytes.Equal(got, frame) {
+			return r, fmt.Errorf("%s budget=%d stream corruption", resolver, budget)
+		}
+		sent = append(sent, frame...)
+		received = append(received, got...)
+	}
+	digest := sha256.Sum256(sent)
+	r.Chunk = chunk
+	r.Bytes = len(sent)
+	r.Queries = queries.Load()
+	r.SHA256 = hex.EncodeToString(digest[:])
+	r.Exact = bytes.Equal(sent, received)
+	return r, nil
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -14,6 +15,13 @@ import (
 // installer. Resolve the current published panel channel, never /releases/latest
 // or an embedded setup version that can point to the other distribution.
 func (r Resolver) resolvePanel(ctx context.Context, project Project, branch string) (Project, error) {
+	return r.resolvePanelForArch(ctx, project, branch, runtime.GOARCH)
+}
+
+func (r Resolver) resolvePanelForArch(ctx context.Context, project Project, branch, arch string) (Project, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return Project{}, fmt.Errorf("WhiteDNS Panel releases require Linux amd64 or arm64; current architecture is %s", arch)
+	}
 	selected := ""
 	for page := 1; page <= 3; page++ {
 		url := fmt.Sprintf("%s/repos/%s/releases?per_page=100&page=%d", strings.TrimRight(r.APIBase, "/"), project.RepoFullName, page)
@@ -49,7 +57,7 @@ func (r Resolver) resolvePanel(ctx context.Context, project Project, branch stri
 			if release.Draft || release.Prerelease || !regexp.MustCompile(`^panel-v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(release.Tag) {
 				continue
 			}
-			asset := "soar-panel-" + strings.TrimPrefix(release.Tag, "panel-v") + "-linux-amd64.tar.gz"
+			asset := "soar-panel-" + strings.TrimPrefix(release.Tag, "panel-v") + "-linux-" + arch + ".tar.gz"
 			found := map[string]bool{}
 			for _, a := range release.Assets {
 				found[a.Name] = true
@@ -77,7 +85,7 @@ func (r Resolver) resolvePanel(ctx context.Context, project Project, branch stri
 		}
 		return project, nil
 	}
-	return Project{}, fmt.Errorf("no published WhiteDNS Panel release has the amd64 archive and checksum; existing service was not changed")
+	return Project{}, fmt.Errorf("no published WhiteDNS Panel release has the %s archive and checksum; existing service was not changed", arch)
 }
 
 func newerPanelTag(a, b string) bool {

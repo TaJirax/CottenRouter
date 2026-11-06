@@ -64,28 +64,26 @@ flowchart LR
 
 ## WhiteDNS Panel and independent updates
 
-**WhiteDNS Panel** is a separate Easy Install entry alongside **Soar** and **Soar 2.2**. Soar 2.2 keeps the older standalone installer and Lantern v0.2.2 engine. Panel 0.5.1 remains **beta only**; WhiteDNS's stable branch and releases have not been changed by this beta work.
-
-For the tested Panel beta, download the [CI artifact](https://github.com/WhiteDNS/Soar-Server/actions/runs/39619905951/artifacts/12354244178), unzip it, and copy `soar-panel-0.5.1-linux-amd64.tar.gz` to the server. GitHub artifact downloads may require sign-in. Router requires the exact tested archive SHA-256 `59f64f2de6a5fbbc652bd93e0cd9e2ab4675816b9cbf27a1324f66eceab8f90b`; it refuses a different archive. Artifacts are temporary; if this one expires, keep the current installation until another verified beta or compatible stable release is available.
+**WhiteDNS Panel** is a separate Easy Install entry alongside **Soar** and **Soar 2.2**. The default installer resolves the newest published stable `panel-v*` release independently of the Router version, selects the Linux AMD64 or ARM64 bundle for the host, and verifies the archive and embedded runtime checksums. The current integration is tested with [Panel v0.14.4](https://github.com/WhiteDNS/Soar-Server/releases/tag/panel-v0.14.4).
 
 ```bash
-sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp \
-  --panel-beta-bundle /root/soar-panel-0.5.1-linux-amd64.tar.gz
-sudo cottenrouter update --project whitedns-panel \
-  --panel-beta-bundle /root/soar-panel-0.5.1-linux-amd64.tar.gz
+sudo cottenrouter install --project whitedns-panel --domain p.example.com --tcp
+sudo cottenrouter update --project whitedns-panel
 ```
 
-The TUI's Panel form has a **Beta CI archive** path field for the same explicit choice. A blank field, or an update without `--panel-beta-bundle`, checks the newest published stable `panel-v*` release independently of Router updates. The older stable Panel lacks the required configurable session fixes and is refused before stopping the service. Future compatible stable releases will be selected automatically by those ordinary commands. Beta binaries are never silently selected or published as stable.
+Leave the TUI's **Legacy beta** archive field blank for the current stable release. The pinned Panel 0.5.1 CI archive remains available only through explicit `--panel-beta-bundle` selection; ordinary installs and updates do not choose it. Soar 2.2 remains the separate older standalone Lantern v0.2.2 option.
 
-Use a separate, short delegated base zone for the Panel. Router forwards its account subdomains to the private backend. Panel accounts provide **Soar over UDP** and **Normal Cotten over UDP/TCP**. The standalone **CottenDNS** entry provides **Normal and CottenMax** with their existing shared domain/key.
+Use a separate, short delegated base zone for the Panel. Router forwards its account subdomains to the private backend. Current Panel accounts provide **Soar, Cotten and MasterDNS** with native per-engine settings. The standalone **CottenDNS** entry provides **Normal and CottenMax** with their existing shared domain/key.
 
-The first Panel install prompts for an administrator password; automated installs can pass `--panel-password-file /path/to/protected-file` (0600). Updates preserve the database, account keys, usage and chosen session limits. Router verifies archive/runtime checksums and capabilities, checks readiness, and restores the previous service and database if an upgrade fails.
+Router imports the Panel's current serving zones on install, update, Configure and Advanced saves. After changing tunnel zones in the Panel, save its Router Configure form to refresh the routes. Preserve the existing identity base zone and private DNS port; serving zones may change without replacing account identities.
+
+The first Panel install prompts for an administrator password; automated installs can pass `--panel-password-file /path/to/protected-file` (0600). Updates preserve the database, account keys, usage and chosen session limits. Router verifies archive/runtime checksums, the selected version and supported CLI contract, checks readiness, and restores the previous service and database if an upgrade fails.
 
 Administration binds to loopback, normally `127.0.0.1:2054`; occupied ports are skipped. Run `sudo cottenrouter keys --project whitedns-panel` to find the address, then forward it, for example `ssh -L 2054:127.0.0.1:2054 root@SERVER`. Router owns maintenance for this installation. Account management and backup downloads remain in the Panel; its standalone privileged updater and public HTTPS wizard are unavailable in Router mode.
 
 For CottenDNS, use `sudo cottenrouter update --project cottendns`. Every operation resolves the latest published compatible release independently of Router's version, with no silent stale-version fallback.
 
-Published standalone CottenDNS and CottenMax have no hidden eight-session cap: defaults are 2,048 sessions and expanded capacity raises them to at least 4,096. The current embedded Cotten runtime and the **Panel beta** use 64 for new/implicit account defaults, configurable per account up to 4,096. Explicit administrator limits are preserved. The existing stable Panel release has not received these beta changes. These are session ceilings, not guaranteed user counts.
+Published standalone CottenDNS and CottenMax have no hidden eight-session cap: defaults are 2,048 sessions and expanded capacity raises them to at least 4,096. Panel uses the per-engine account limits and defaults provided by its selected release; Router preserves explicit administrator settings. These are session ceilings, not guaranteed user counts.
 
 <a id="cottenmax-beta"></a>
 
@@ -158,7 +156,7 @@ Install a specific release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.25
+  | sudo bash -s -- --version=v1.2.26
 ```
 
 Install the current development branch:
@@ -373,7 +371,7 @@ Pinning a version is useful for reproducible deployments or returning to a known
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaJirax/CottenRouter/main/scripts/install.sh \
-  | sudo bash -s -- --version=v1.2.25
+  | sudo bash -s -- --version=v1.2.26
 ```
 
 Available versions are listed on the [Releases page](https://github.com/TaJirax/CottenRouter/releases).

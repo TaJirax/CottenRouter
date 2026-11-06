@@ -84,35 +84,30 @@ Configuration changes are validated and synchronized with the router.
 
 ## WhiteDNS Soar-Server comparison
 
-[WhiteDNS/Soar-Server](https://github.com/WhiteDNS/Soar-Server) packages Lantern's
-Soar engine with additional installation and management. The reviewed WhiteDNS
-commit is `b24b85ac3a6c7cfcb1bebdc8193a9e37cf2bdec6`.
+[WhiteDNS/Soar-Server](https://github.com/WhiteDNS/Soar-Server) provides the
+older standalone Soar installer and the separate current WhiteDNS account Panel.
+CottenRouter manages these through distinct project entries:
 
-| Component | CottenRouter Soar | CottenRouter Soar 2.2 | WhiteDNS panel |
+| Component | CottenRouter Soar | CottenRouter Soar 2.2 | WhiteDNS Panel |
 |---|---|---|---|
-| Engine | Resolved official Lantern source; tested v0.2.3 | Soar v0.2.2 | Soar v0.2.2 |
-| Installation | Builds the pinned upstream commit | Verified WhiteDNS standalone 0.1.3 amd64 bundle | Checksum-verified amd64 bundle, web management |
-| Management | CottenRouter TUI/CLI | CottenRouter TUI/CLI | Accounts, quotas, expiry, subscriptions, QR, backups |
+| Engine | Resolved official Lantern source; tested v0.2.3 | Soar v0.2.2 | Native Soar, Cotten and MasterDNS in the selected Panel release |
+| Installation | Builds the pinned upstream commit | Verified WhiteDNS standalone 0.1.3 AMD64 bundle | Latest stable verified AMD64 or ARM64 bundle |
+| Management | CottenRouter TUI/CLI | CottenRouter TUI/CLI | Native accounts, quotas, expiry, subscriptions, QR and backups |
 | Identity | One delegated zone and server seed | One delegated zone and server seed | Independent account subzones and keys |
-| DNS listener | Private `127.0.0.1:5305` UDP | Private `127.0.0.1:5306` UDP | Assigned local IPv4, UDP/53 |
+| DNS listener | Private `127.0.0.1:5305` UDP | Private `127.0.0.1:5306` UDP | Private `127.0.0.1:5307` UDP/TCP |
 
-The WhiteDNS transport remains upstream Soar. Its published standalone 0.1.3
-and panel 0.3.0 bundles pin v0.2.2; upstream v0.2.3 changes the client/session
-implementation while retaining the same server and server CLI.
+The native standalone installer owns `soar-server.service`,
+`/etc/soar/server.conf` and `/etc/soar/server.key`. The managed Soar 2.2 option
+uses `soar22-server.service` and its own directory, so it can coexist with
+official Soar without replacing another installation.
 
-WhiteDNS's **native standalone installer** owns `soar-server.service`,
-`/etc/soar/server.conf`, and `/etc/soar/server.key`; it also provides diagnostics
-and IR/GLOBAL profile import links through `soar-manager`. Running that wizard
-unchanged conflicts with CottenRouter's service name and public port ownership.
-The managed **Soar 2.2** option uses the packaged server binary with its own
-`soar22-server.service` and directory, so it can coexist with official Soar.
-The panel runs `soar-panel` and `soar-panel-ops`, stores accounts in
-`/var/lib/soar-panel/panel.db`, and generates
-new account zones/keys. Integrating it requires a separate adapter with a private
-`--dns-listen`, management-port planning, and database/account lifecycle support.
-The optional WhiteDNS panel is not part of either CottenRouter option.
-CottenRouter refuses to install over or manage a foreign Soar service
-so its configuration and pinned server identity remain under its owner's control.
+Choose `whitedns-panel` for the current account Panel. Router preserves its
+database and keys at `/opt/cottenrouter/backends/whitedns-panel/panel.db`,
+assigns private DNS and administration ports, and manages upgrades through
+`cottenrouter update --project whitedns-panel`. Administration normally uses
+`127.0.0.1:2054` through SSH forwarding. The native privileged updater and public
+HTTPS installer are not used in Router mode. See the
+[Panel setup](../README.md#whitedns-panel-and-independent-updates) for commands.
 
 The service sandbox permits `AF_NETLINK`: Soar's public-destination filter
 enumerates local interface addresses through Linux netlink. A successful DNS

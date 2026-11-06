@@ -65,6 +65,19 @@ Soar, are imported with UDP and TCP ingress; TCP queries bridge to the private
 UDP tunnel. NaiveProxy and StunTLS keep TLS passthrough, and enabled WARP stays
 managed by SlipGate. New unrelated native settings do not block integration.
 
+WhiteDNS Panel uses the latest stable `panel-v*` release for Linux AMD64 or
+ARM64. Current releases are checked against their version and native CLI
+contract; the historical beta capability command is used only for legacy
+builds. Native account settings and identities stay in
+`/opt/cottenrouter/backends/whitedns-panel/panel.db`.
+
+The Panel can serve multiple tunnel zones independently of its identity base
+zone. Router imports the native serving list on install/update and on Configure
+or Advanced saves, briefly stopping only Panel while its offline settings export
+reads the database. After changing zones in Panel, save Router's Configure form
+with its existing base zone and private port to synchronize the routes. A
+conflict with another backend restores the preceding route and service state.
+
 Soar and Soar 2.2 each have a guided form for a single delegated zone and private UDP port.
 They have no extra/chat domains or TCP/DoT/DoH toggles. The Advanced editor manages
 `SOAR_ZONE`, `SOAR_LISTEN`, and `SOAR_ALLOW_PORTS` in
